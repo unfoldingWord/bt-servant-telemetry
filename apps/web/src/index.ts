@@ -1,9 +1,12 @@
 import { Hono } from 'hono';
 import { VERSION } from './config/version.js';
+import { tailHandler } from './tail/index.js';
 
 type Env = {
   ENVIRONMENT: string;
   TELEMETRY_EPOCH: string;
+  PII_HASH_SALT: string;
+  DB: D1Database;
 };
 
 const app = new Hono<{ Bindings: Env }>();
@@ -17,4 +20,9 @@ app.get('/health', (c) =>
   })
 );
 
-export default app;
+const handler: ExportedHandler<Env> = {
+  fetch: app.fetch,
+  tail: tailHandler,
+};
+
+export default handler;
