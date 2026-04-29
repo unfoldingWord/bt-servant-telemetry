@@ -9,6 +9,8 @@ head_sampling_rate = 1
 [vars]
 ENVIRONMENT = "development"
 TELEMETRY_EPOCH = "2026-04-24"
+CF_ACCOUNT_ID = "REPLACE_WITH_ACCOUNT_ID"
+SOURCE_WORKER_NAME = "bt-servant-worker"
 
 # Top-level D1 binding (placeholder ID — used by `wrangler dev` and tests via miniflare).
 # Per-env overrides below carry the real database IDs once `wrangler d1 create` has been run.
@@ -27,6 +29,8 @@ name = "bt-servant-telemetry-dev"
 [env.dev.vars]
 ENVIRONMENT = "dev"
 TELEMETRY_EPOCH = "2026-04-24"
+CF_ACCOUNT_ID = "REPLACE_WITH_ACCOUNT_ID"
+SOURCE_WORKER_NAME = "bt-servant-worker"
 
 [env.dev.observability]
 enabled = true
@@ -46,6 +50,8 @@ name = "bt-servant-telemetry-staging"
 [env.staging.vars]
 ENVIRONMENT = "staging"
 TELEMETRY_EPOCH = "2026-04-24"
+CF_ACCOUNT_ID = "REPLACE_WITH_ACCOUNT_ID"
+SOURCE_WORKER_NAME = "bt-servant-worker"
 
 [env.staging.observability]
 enabled = true
@@ -65,6 +71,8 @@ name = "bt-servant-telemetry-production"
 [env.production.vars]
 ENVIRONMENT = "production"
 TELEMETRY_EPOCH = "2026-04-24"
+CF_ACCOUNT_ID = "REPLACE_WITH_ACCOUNT_ID"
+SOURCE_WORKER_NAME = "bt-servant-worker"
 
 [env.production.observability]
 enabled = true
