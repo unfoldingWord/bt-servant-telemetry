@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@bt-servant-telemetry/shared": "workspace:*",
-    "hono": "^4.12.7",
+    "hono": "^4.12.18",
     "zod": "^3.25.76"
   },
   "devDependencies": {

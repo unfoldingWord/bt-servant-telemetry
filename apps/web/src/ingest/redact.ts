@@ -56,7 +56,23 @@ export async function redact(rawJson: string, salt: string): Promise<CleanEvent 
   const requestId = asString(obj.request_id);
   const ts = asNumber(obj.timestamp);
   if (!event || !requestId || ts === null) return null;
-  if (!isKnownEvent(event)) return null;
+  if (!isKnownEvent(event)) {
+    // Schema-drift signal. Unknown event names mean bt-servant-worker shipped
+    // a new event we haven't whitelisted yet. We emit a structured warning
+    // (queryable via the Workers Observability Telemetry API as
+    // event="telemetry_unknown_event_dropped") so the drift is observable
+    // instead of disappearing silently.
+    console.warn(
+      JSON.stringify({
+        event: 'telemetry_unknown_event_dropped',
+        level: 'warn',
+        unknown_event: event,
+        request_id: requestId,
+        timestamp: ts,
+      })
+    );
+    return null;
+  }
 
   const clientId = asString(obj.client_id);
   const userId = asString(obj.user_id);

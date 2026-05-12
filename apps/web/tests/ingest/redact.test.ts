@@ -1,6 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { redact, hashUserId } from '../../src/ingest/redact.js';
 import { sampleLogMessages } from '../fixtures/sample-tail-events.js';
+
+const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+afterEach(() => warnSpy.mockClear());
 
 const SALT = 'test-salt-deterministic';
 
@@ -92,6 +95,31 @@ describe('redact', () => {
       timestamp: 1700000000000,
     });
     expect(await redact(raw, SALT)).toBeNull();
+  });
+
+  it('emits a structured warn when dropping an unknown event (drift signal)', async () => {
+    const raw = JSON.stringify({
+      event: 'totally_new_event_we_have_not_seen',
+      request_id: 'req-xyz',
+      timestamp: 1700000000000,
+    });
+    await redact(raw, SALT);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(warnSpy.mock.calls[0]![0] as string);
+    expect(payload).toMatchObject({
+      event: 'telemetry_unknown_event_dropped',
+      level: 'warn',
+      unknown_event: 'totally_new_event_we_have_not_seen',
+      request_id: 'req-xyz',
+      timestamp: 1700000000000,
+    });
+  });
+
+  it('does not warn for invalid JSON or missing required fields (regular console noise)', async () => {
+    await redact('not json', SALT);
+    await redact(JSON.stringify({ request_id: 'x', timestamp: 1 }), SALT);
+    await redact(JSON.stringify({ event: 'request_received', request_id: 'x' }), SALT);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('returns null when required fields are missing', async () => {
