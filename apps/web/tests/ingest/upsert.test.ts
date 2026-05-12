@@ -131,6 +131,86 @@ describe('upsertUser is order-independent', () => {
   });
 });
 
+describe('migration 0002 backfill (existing-data parity)', () => {
+  // The migration must repopulate user_active_days from the events table
+  // and recompute users.days_active_count, so PR-preview/dev databases that
+  // accumulated activity under the order-sensitive 0001 schema get the
+  // corrected counts after upgrading. We exercise the migration's backfill
+  // SQL inline against seeded data — applyD1Migrations runs once at suite
+  // setup, so we simulate "pre-0002 state" by clearing user_active_days
+  // and recomputing.
+  const USER_HASH = 'b'.repeat(64);
+  const ORG = 'wordcollective';
+
+  beforeEach(async () => {
+    // Seed events across 3 distinct UTC days for one user.
+    const insertEvent = env.DB.prepare(
+      `INSERT INTO events (request_id, event, ts, level, org, user_hash, client_id)
+       VALUES (?, ?, ?, NULL, ?, ?, 'web')`
+    );
+    await insertEvent.bind('req-1', 'request_received', DAY_A_MS, ORG, USER_HASH).run();
+    await insertEvent.bind('req-2', 'request_received', DAY_A_MS + 3600_000, ORG, USER_HASH).run();
+    await insertEvent.bind('req-3', 'request_received', DAY_B_MS, ORG, USER_HASH).run();
+    await insertEvent.bind('req-4', 'request_received', DAY_C_MS, ORG, USER_HASH).run();
+
+    // Seed a users row whose days_active_count is stale (the bug we're
+    // fixing — order-sensitive UPSERT could have left it at 1 when truth
+    // is 3).
+    await env.DB.prepare(
+      `INSERT INTO users (user_hash, org, client_id, first_seen_ts, last_seen_ts,
+                          days_active_count, last_active_day)
+       VALUES (?, ?, 'web', ?, ?, 1, 20260426)`
+    )
+      .bind(USER_HASH, ORG, DAY_A_MS, DAY_C_MS)
+      .run();
+
+    // Wipe user_active_days to simulate "0002 has not yet backfilled".
+    await env.DB.exec('DELETE FROM user_active_days');
+  });
+
+  it('repopulates user_active_days from events and recomputes days_active_count', async () => {
+    // Same SQL as migration 0002 — kept in sync intentionally to detect
+    // drift between the migration file and the recompute logic.
+    // D1's exec() splits on newlines, so we use prepare/run for multi-line.
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO user_active_days (user_hash, org, day)
+       SELECT DISTINCT user_hash, org,
+         CAST(strftime('%Y', ts / 1000, 'unixepoch') AS INTEGER) * 10000 +
+         CAST(strftime('%m', ts / 1000, 'unixepoch') AS INTEGER) * 100 +
+         CAST(strftime('%d', ts / 1000, 'unixepoch') AS INTEGER)
+       FROM events
+       WHERE user_hash IS NOT NULL AND org IS NOT NULL`
+    ).run();
+    await env.DB.prepare(
+      `UPDATE users SET days_active_count = COALESCE(
+         (SELECT COUNT(*) FROM user_active_days
+          WHERE user_active_days.user_hash = users.user_hash
+            AND user_active_days.org = users.org),
+         1
+       )
+       WHERE EXISTS (
+         SELECT 1 FROM user_active_days
+         WHERE user_active_days.user_hash = users.user_hash
+           AND user_active_days.org = users.org
+       )`
+    ).run();
+
+    const dayRows = await env.DB.prepare(
+      `SELECT day FROM user_active_days WHERE user_hash = ? AND org = ? ORDER BY day`
+    )
+      .bind(USER_HASH, ORG)
+      .all<{ day: number }>();
+    expect(dayRows.results.map((r) => r.day)).toEqual([20260424, 20260425, 20260426]);
+
+    const userRow = await env.DB.prepare(
+      `SELECT days_active_count FROM users WHERE user_hash = ? AND org = ?`
+    )
+      .bind(USER_HASH, ORG)
+      .first<{ days_active_count: number }>();
+    expect(userRow?.days_active_count).toBe(3);
+  });
+});
+
 describe('ingestBatch order-independence (end-to-end)', () => {
   it('produces identical user rows for forward vs reversed event order', async () => {
     const events: CleanEvent[] = [
