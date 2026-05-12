@@ -1,14 +1,14 @@
 # bt-servant-telemetry — Implementation Plan
 
-> **Status:** Phases 1–3 **merged to `main`** as PR #2 (squash commit `be9c54f`, 2026-05-12). Original branch `telemetry-scaffold` deleted. From here on, **one PR per phase off `main`**. The migration 0002 + drift-signal patches landed inside PR #2 as review-fix commits (`242b8fc`, `902ab29`) before squash.
+> **Status:** Phases 1–4 **merged to `main`**. PR #2 (squash `be9c54f`, 2026-05-12) landed phases 1–3; PR #3 (squash `fccc4af`, 2026-05-12) landed phase 4 with two review-fix commits before merge (multi-tenant `(user_hash, org)` distinct counts; strict `days` validation on `/api/trend`). From here on, **one PR per phase off `main`**.
 >
 > **Phase ledger:**
 >
 > - Phase 1 — Monorepo skeleton — ✅ done (in PR #2)
 > - Phase 2 — D1 schema + redact + tail handler — ✅ done (in PR #2)
 > - Phase 3 — Backfill script — ✅ done (in PR #2)
-> - Phase 4 — API layer — 🚧 in progress on `phase-4-api`
-> - Phase 5 — Dashboard — pending
+> - Phase 4 — API layer — ✅ done (in PR #3)
+> - Phase 5 — Dashboard — ⏳ next
 > - Phase 6 — Scheduled handlers — pending
 > - Phase 7 — Zulip integration — pending
 > - Phase 8 — Prod deploy (separately scoped; needs `CLOUDFLARE_API_TOKEN` GH secret + real D1 IDs in `wrangler.toml`; "Deploy to Dev" CI check failing until then is expected).
