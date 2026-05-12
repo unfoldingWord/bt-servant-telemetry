@@ -1,0 +1,27 @@
+{
+  "name": "@bt-servant-telemetry/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "backfill": "wrangler dev src/scripts/backfill.ts",
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@bt-servant-telemetry/shared": "workspace:*",
+    "hono": "^4.12.18",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.8",
+    "@cloudflare/workers-types": "^4.20260129.0",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9",
+    "wrangler": "^3.114.17"
+  }
+}

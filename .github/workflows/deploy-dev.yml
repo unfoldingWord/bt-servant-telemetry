@@ -1,0 +1,78 @@
+name: Deploy Dev
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  wait-for-ci:
+    name: Wait for CI
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+    steps:
+      - name: Wait for CI Pass check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha = context.payload.pull_request.head.sha;
+            const maxAttempts = 60;
+            const delaySeconds = 10;
+
+            for (let i = 0; i < maxAttempts; i++) {
+              const { data: checkRuns } = await github.rest.checks.listForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: sha,
+                check_name: 'CI Pass',
+              });
+
+              const ciPass = checkRuns.check_runs[0];
+              if (ciPass) {
+                if (ciPass.conclusion === 'success') {
+                  console.log('CI Pass check succeeded');
+                  return;
+                }
+                if (ciPass.conclusion === 'failure') {
+                  core.setFailed('CI Pass check failed');
+                  return;
+                }
+              }
+
+              console.log(`Waiting for CI Pass... (attempt ${i + 1}/${maxAttempts})`);
+              await new Promise(r => setTimeout(r, delaySeconds * 1000));
+            }
+
+            core.setFailed('Timed out waiting for CI Pass check');
+
+  deploy:
+    name: Deploy to Dev
+    needs: [wait-for-ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Deploy to Cloudflare Workers (dev)
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/web
+          environment: dev
