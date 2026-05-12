@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { VERSION } from './config/version.js';
 import { tailHandler } from './tail/index.js';
+import { apiRoutes } from './api/routes.js';
 
 type Env = {
   ENVIRONMENT: string;
@@ -19,6 +20,8 @@ app.get('/health', (c) =>
     epoch: c.env.TELEMETRY_EPOCH,
   })
 );
+
+app.route('/api', apiRoutes);
 
 const handler: ExportedHandler<Env> = {
   fetch: app.fetch,

@@ -7,7 +7,7 @@
 > - Phase 1 — Monorepo skeleton — ✅ done (in PR #2)
 > - Phase 2 — D1 schema + redact + tail handler — ✅ done (in PR #2)
 > - Phase 3 — Backfill script — ✅ done (in PR #2)
-> - Phase 4 — API layer — ⏳ next
+> - Phase 4 — API layer — 🚧 in progress on `phase-4-api`
 > - Phase 5 — Dashboard — pending
 > - Phase 6 — Scheduled handlers — pending
 > - Phase 7 — Zulip integration — pending
