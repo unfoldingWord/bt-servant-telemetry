@@ -119,8 +119,17 @@ async function countUsersSinceEpoch(db: D1Database, epoch: number): Promise<numb
 }
 
 async function countDistinctUsers30d(db: D1Database, nowMs: number): Promise<number> {
+  // Counts distinct (user_hash, org) pairs to match the canonical user key
+  // used by users.PRIMARY KEY and the all-time / fixed-epoch counters.
+  // COUNT(DISTINCT user_hash) alone would collapse a hash that appears in
+  // two orgs, causing this counter to disagree with the hero.
   const row = await db
-    .prepare(`SELECT COUNT(DISTINCT user_hash) AS n FROM events WHERE ts >= ?`)
+    .prepare(
+      `SELECT COUNT(*) AS n FROM (
+         SELECT DISTINCT user_hash, org FROM events
+          WHERE ts >= ? AND user_hash IS NOT NULL AND org IS NOT NULL
+       )`
+    )
     .bind(nowMs - 30 * ONE_DAY_MS)
     .first<{ n: number }>();
   return row?.n ?? 0;
@@ -223,12 +232,18 @@ async function trendDistinctUsersByDay(
   db: D1Database,
   sinceMs: number
 ): Promise<Map<number, number>> {
+  // Counts distinct (user_hash, org) per day — same canonical key as the
+  // hero counters so trend and snapshot stay consistent under multi-tenant
+  // data. SQLite has no COUNT(DISTINCT a, b), so we project distinct pairs
+  // in a subquery and count rows per day.
   const { results } = await db
     .prepare(
-      `SELECT ${DAY_KEY_SQL} AS day, COUNT(DISTINCT user_hash) AS n
-         FROM events
-        WHERE ts >= ? AND user_hash IS NOT NULL
-        GROUP BY day`
+      `SELECT day, COUNT(*) AS n FROM (
+         SELECT DISTINCT user_hash, org, ${DAY_KEY_SQL} AS day
+           FROM events
+          WHERE ts >= ? AND user_hash IS NOT NULL AND org IS NOT NULL
+       )
+       GROUP BY day`
     )
     .bind(sinceMs)
     .all<{ day: number; n: number }>();

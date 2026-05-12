@@ -17,8 +17,11 @@ const DEFAULT_TREND_DAYS = 30;
 
 function parseTrendDays(raw: string | undefined): number | null {
   if (raw === undefined) return DEFAULT_TREND_DAYS;
+  // Reject anything that isn't a bare base-10 integer — parseInt would
+  // otherwise accept "7foo" and "7.5" as 7, contradicting the 400 message.
+  if (!/^\d+$/.test(raw)) return null;
   const n = Number.parseInt(raw, 10);
-  if (!Number.isInteger(n) || n < 1 || n > MAX_TREND_DAYS) return null;
+  if (n < 1 || n > MAX_TREND_DAYS) return null;
   return n;
 }
 

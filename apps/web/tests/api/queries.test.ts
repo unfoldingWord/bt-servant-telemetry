@@ -157,7 +157,30 @@ describe('querySnapshot', () => {
     expect(snap.distinct_users_fixed_epoch).toBe(2);
   });
 
-  it('distinct_users_30d counts distinct user_hash in events from last 30 days', async () => {
+  it('distinct_users_30d counts (user_hash, org) pairs - same hash in two orgs counts as 2', async () => {
+    // Same user_hash, two different orgs — must count as 2 to match the
+    // canonical user key used by users.PRIMARY KEY (user_hash, org) and the
+    // all-time / fixed-epoch counters. Regression guard: PR #3 review.
+    const sharedHash = 'a'.repeat(64);
+    await insertEvent({
+      request_id: 'r1',
+      event: 'request_received',
+      ts: NOW - 5 * 86_400_000,
+      user_hash: sharedHash,
+      org: 'unfoldingWord',
+    });
+    await insertEvent({
+      request_id: 'r2',
+      event: 'request_received',
+      ts: NOW - 5 * 86_400_000,
+      user_hash: sharedHash,
+      org: 'wordcollective',
+    });
+    const snap = await querySnapshot(env.DB, EPOCH_ISO, NOW);
+    expect(snap.distinct_users_30d).toBe(2);
+  });
+
+  it('distinct_users_30d counts distinct users in events from last 30 days', async () => {
     // hash A: event inside 30d window
     await insertEvent({
       request_id: 'r1',
@@ -282,6 +305,30 @@ describe('queryTrend', () => {
     // Last point is "today" (NOW's UTC day), first is 6 days back, oldest-first.
     expect(series.points[series.points.length - 1]?.day).toBe(20260512);
     expect(series.points[0]?.day).toBe(20260506);
+  });
+
+  it('distinct_users trend counts (user_hash, org) pairs per day, not just user_hash', async () => {
+    // Regression guard for the PR #3 review: ensure trend semantics match
+    // the snapshot semantics. Same hash in two orgs on the same day = 2.
+    const dayA = Date.UTC(2026, 4, 10, 12, 0, 0); // 20260510
+    const sharedHash = 'a'.repeat(64);
+    await insertEvent({
+      request_id: 'r1',
+      event: 'request_received',
+      ts: dayA,
+      user_hash: sharedHash,
+      org: 'unfoldingWord',
+    });
+    await insertEvent({
+      request_id: 'r2',
+      event: 'request_received',
+      ts: dayA,
+      user_hash: sharedHash,
+      org: 'wordcollective',
+    });
+    const series = await queryTrend(env.DB, 'distinct_users', 7, NOW);
+    const byDay = new Map(series.points.map((p) => [p.day, p.value]));
+    expect(byDay.get(20260510)).toBe(2);
   });
 
   it('distinct_users trend buckets users by UTC day', async () => {

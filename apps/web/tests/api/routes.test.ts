@@ -78,6 +78,18 @@ describe('GET /api/trend', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects non-integer days with 400 (parseInt would silently accept these)', async () => {
+    // Regression guard for the PR #3 review: parseInt("7foo") === 7 and
+    // parseInt("7.5") === 7, which would silently violate the documented
+    // "integer 1..90" contract. Strict regex check rejects both.
+    for (const bad of ['7foo', '7.5', '-7', '', '0x7']) {
+      const res = await SELF.fetch(
+        `http://test/api/trend?metric=distinct_users&days=${encodeURIComponent(bad)}`
+      );
+      expect(res.status).toBe(400);
+    }
+  });
+
   it('returns TrendSeries with default days=30', async () => {
     const res = await SELF.fetch('http://test/api/trend?metric=distinct_users');
     expect(res.status).toBe(200);
