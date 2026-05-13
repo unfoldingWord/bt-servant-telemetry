@@ -3,6 +3,9 @@ import { VERSION } from './config/version.js';
 import { tailHandler } from './tail/index.js';
 import { apiRoutes } from './api/routes.js';
 import { scheduledHandler } from './scheduled/index.js';
+import { consoleSink } from './scheduled/sink.js';
+import { createZulipSink } from './zulip/index.js';
+import type { Sink } from './config/sink.js';
 
 type Env = {
   ENVIRONMENT: string;
@@ -15,11 +18,41 @@ type Env = {
   CF_API_TOKEN: string;
   CF_ACCOUNT_ID: string;
   SOURCE_WORKER_NAME: string;
+  // Zulip delivery — all per-env secrets (set via `wrangler secret put`).
+  // Optional so `wrangler dev` and tests fall back to the console sink
+  // when secrets aren't configured.
+  ZULIP_SITE?: string;
+  ZULIP_BOT_EMAIL?: string;
+  ZULIP_BOT_TOKEN?: string;
+  ZULIP_STREAM?: string;
+  ZULIP_TOPIC?: string;
   // SvelteKit static dashboard, served via Workers static assets binding.
   // Optional so vitest-pool-workers integration tests (which don't ship
   // the dashboard build) still run.
   ASSETS?: Fetcher;
 };
+
+// Pick the delivery sink based on env config. All five Zulip values
+// must be present to opt into Zulip — anything else falls back to the
+// console sink so dev/test runs don't need a real Zulip stream.
+function selectSink(env: Env): Sink {
+  if (
+    env.ZULIP_SITE &&
+    env.ZULIP_BOT_EMAIL &&
+    env.ZULIP_BOT_TOKEN &&
+    env.ZULIP_STREAM &&
+    env.ZULIP_TOPIC
+  ) {
+    return createZulipSink({
+      site: env.ZULIP_SITE,
+      botEmail: env.ZULIP_BOT_EMAIL,
+      botToken: env.ZULIP_BOT_TOKEN,
+      stream: env.ZULIP_STREAM,
+      topic: env.ZULIP_TOPIC,
+    });
+  }
+  return consoleSink;
+}
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -53,7 +86,8 @@ app.on(['GET', 'HEAD'], '*', (c) => {
 const handler: ExportedHandler<Env> = {
   fetch: app.fetch,
   tail: tailHandler,
-  scheduled: scheduledHandler,
+  scheduled: (controller, env, ctx) =>
+    scheduledHandler(controller, env, ctx, { sink: selectSink(env) }),
 };
 
 export default handler;

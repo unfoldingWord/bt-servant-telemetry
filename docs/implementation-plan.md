@@ -10,7 +10,7 @@
 > - Phase 4 — API layer — ✅ done (in PR #3)
 > - Phase 5 — Dashboard — ✅ done (in PR #4)
 > - Phase 6 — Scheduled handlers — ✅ done (in PR #5; sink is a console no-op until Phase 7)
-> - Phase 7 — Zulip integration — ⏳ next
+> - Phase 7 — Zulip integration — 🔄 in flight on `phase-7-zulip` branch (raw client + sink adapter + env-driven sink selection in `index.ts`; falls back to console sink when secrets aren't set)
 > - Phase 8 — Prod deploy (separately scoped; needs `CLOUDFLARE_API_TOKEN` GH secret + real D1 IDs in `wrangler.toml`; "Deploy to Dev" CI check failing until then is expected).
 >
 > **Path convention in this doc:** repo-relative paths are bare (`apps/web/...`); references to sibling repos use a leading `../` and are pointers to source-of-truth configs we cloned into this repo, not live runtime dependencies.
