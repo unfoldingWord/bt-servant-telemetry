@@ -1,14 +1,23 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import type {
     EventHeatmapPayload,
+    HealthSnapshot,
     MetricsSnapshot,
     SparklinesPayload,
     TrendSeries,
   } from '@bt-servant-telemetry/shared';
-  import { fetchEventHeatmap, fetchSnapshot, fetchSparklines, fetchTrend } from '$lib/api';
+  import {
+    fetchEventHeatmap,
+    fetchHealth,
+    fetchSnapshot,
+    fetchSparklines,
+    fetchTrend,
+  } from '$lib/api';
+  import { createPoller, type Poller } from '$lib/poll';
   import ActivityHeatmap from '$lib/components/ActivityHeatmap.svelte';
   import FlipCounter from '$lib/components/FlipCounter.svelte';
+  import HealthPill from '$lib/components/HealthPill.svelte';
   import KpiTile from '$lib/components/KpiTile.svelte';
   import LatencyTile from '$lib/components/LatencyTile.svelte';
   import TrendChart from '$lib/components/TrendChart.svelte';
@@ -27,8 +36,20 @@
   let trendErrorRate = $state<TrendSeries | null>(null);
   let trendP95 = $state<TrendSeries | null>(null);
   let eventHeatmap = $state<EventHeatmapPayload | null>(null);
+  let health = $state<HealthSnapshot | null>(null);
   let window = $state<Window>('all_time');
   let loadError = $state<string | null>(null);
+
+  // Polling cadences per data class. Picked to match how fast each
+  // signal actually moves in production: health is the live pulse
+  // (15s), snapshot drives the flip counter and KPI numbers (30s),
+  // sparklines and trends are daily aggregates that barely move at
+  // sub-minute scale (60s / 5min). All pollers are visibility-aware
+  // via createPoller — they stop while the tab is hidden.
+  const POLL_HEALTH_MS = 15_000;
+  const POLL_SNAPSHOT_MS = 30_000;
+  const POLL_SPARKLINES_MS = 60_000;
+  const POLL_TRENDS_MS = 5 * 60_000;
 
   function heroValue(snap: MetricsSnapshot | null, w: Window): number {
     if (!snap) return 0;
@@ -46,24 +67,66 @@
     return Math.max(3, String(Math.max(0, Math.floor(value))).length);
   }
 
-  onMount(async () => {
-    // All payloads fire in parallel — none share dependencies and the page
-    // is faster if they all start immediately rather than chained.
-    const [snap, spk, td, te, tp, eh] = await Promise.allSettled([
-      fetchSnapshot(),
-      fetchSparklines(30),
+  async function refreshHealth(): Promise<void> {
+    try {
+      health = await fetchHealth();
+    } catch {
+      // Health stays last-known; the pill's relative-time will continue
+      // to age, which is the right "did we lose the signal?" cue.
+    }
+  }
+
+  async function refreshSnapshot(): Promise<void> {
+    try {
+      snapshot = await fetchSnapshot();
+      if (loadError) loadError = null;
+    } catch (err) {
+      loadError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function refreshSparklines(): Promise<void> {
+    try {
+      sparklines = await fetchSparklines(30);
+    } catch {
+      /* swallow — last-known sparklines stay on screen */
+    }
+  }
+
+  async function refreshTrendsAndHeatmap(): Promise<void> {
+    const [td, te, tp, eh] = await Promise.allSettled([
       fetchTrend('distinct_users', 30),
       fetchTrend('error_rate', 30),
       fetchTrend('p95_latency', 30),
       fetchEventHeatmap(30),
     ]);
-    if (snap.status === 'fulfilled') snapshot = snap.value;
-    else loadError = snap.reason instanceof Error ? snap.reason.message : String(snap.reason);
-    if (spk.status === 'fulfilled') sparklines = spk.value;
     if (td.status === 'fulfilled') trendDistinctUsers = td.value;
     if (te.status === 'fulfilled') trendErrorRate = te.value;
     if (tp.status === 'fulfilled') trendP95 = tp.value;
     if (eh.status === 'fulfilled') eventHeatmap = eh.value;
+  }
+
+  const pollers: Poller[] = [];
+
+  onMount(async () => {
+    // Initial parallel fetch so first paint has data ASAP. Pollers
+    // start ticking AFTER the first round so we don't double-fire.
+    await Promise.allSettled([
+      refreshHealth(),
+      refreshSnapshot(),
+      refreshSparklines(),
+      refreshTrendsAndHeatmap(),
+    ]);
+    pollers.push(
+      createPoller(refreshHealth, POLL_HEALTH_MS),
+      createPoller(refreshSnapshot, POLL_SNAPSHOT_MS),
+      createPoller(refreshSparklines, POLL_SPARKLINES_MS),
+      createPoller(refreshTrendsAndHeatmap, POLL_TRENDS_MS)
+    );
+  });
+
+  onDestroy(() => {
+    for (const p of pollers) p.dispose();
   });
 </script>
 
@@ -73,14 +136,7 @@
       <span class="text-fg text-sm font-semibold tracking-wide uppercase">bt-servant</span>
       <span class="text-fg-subtle text-xs tracking-widest uppercase">telemetry</span>
     </div>
-    <div
-      class="border-border bg-bg-card flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs"
-    >
-      <span class="bg-status-up status-pulse h-1.5 w-1.5 rounded-full"></span>
-      <span class="text-fg-muted tabular tracking-wider uppercase">up</span>
-      <span class="text-fg-subtle">·</span>
-      <span class="text-fg-subtle tabular">last event 3s ago</span>
-    </div>
+    <HealthPill {health} />
   </header>
 
   <!-- Hero stack: vertical rhythm declared as a single flex column with
