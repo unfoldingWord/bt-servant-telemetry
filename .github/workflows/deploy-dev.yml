@@ -14,9 +14,14 @@ jobs:
   deploy:
     name: Deploy to Dev
     runs-on: ubuntu-latest
-    # workflow_run fires on every CI completion — including failures. Only
-    # deploy when CI succeeded; otherwise the deploy job is a no-op.
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # workflow_run fires on every CI completion that ran with `main` as its
+    # branch context — INCLUDING CI runs triggered by `pull_request:
+    # branches: [main]` on a feature branch. Without the `event == 'push'`
+    # guard, this job would deploy a PR head SHA to dev as soon as that
+    # PR's CI went green — exactly the pre-merge clobber the workflow_run
+    # rewrite was meant to remove. Both conditions must hold: CI succeeded
+    # AND the CI run was triggered by a push (i.e. a merge to main).
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' }}
     steps:
       - uses: actions/checkout@v4
         with:
