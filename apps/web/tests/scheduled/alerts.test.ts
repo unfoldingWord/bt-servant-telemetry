@@ -112,6 +112,21 @@ describe('runAlertSweep', () => {
     expect(intents).toEqual([]);
   });
 
+  it('is idempotent when a parallel run has already claimed the dedupe row', async () => {
+    // Simulate the race: another concurrent sweep wrote the posted_alerts
+    // row between this run's evaluate() and its INSERT. Old code would
+    // crash on PK violation; INSERT OR IGNORE must treat this as
+    // still-firing without throwing or emitting.
+    await env.DB.prepare(
+      `INSERT INTO posted_alerts (alert_kind, posted_ts) VALUES ('worker_offline', ?)`
+    )
+      .bind(NOW - 1000)
+      .run();
+    const { intents } = await runAlertSweep(env.DB, NOW);
+    expect(intents).toEqual([]);
+    expect(await postedAlertKinds()).toEqual(['worker_offline']);
+  });
+
   it('suppresses error_rate_high when worker_offline is also firing', async () => {
     // No events in last 5 min, but errors in the 6-10 min window.
     await insertEvent({

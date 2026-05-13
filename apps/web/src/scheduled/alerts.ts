@@ -86,29 +86,30 @@ async function evaluate(db: D1Database, nowMs: number): Promise<AlertCondition[]
 
 type DedupeOutcome = 'first-fire' | 'still-firing' | 'cleared' | 'still-clear';
 
+// Race-safe: derive first-fire from the write itself, not from a prior
+// SELECT. Two overlapping cron runs that both observe "no row" would
+// otherwise both attempt INSERT and one would crash the sweep on the PK
+// violation. INSERT OR IGNORE collapses the race — the loser sees
+// meta.changes === 0 and treats it as still-firing.
 async function reconcileDedupe(
   db: D1Database,
   condition: AlertCondition,
   nowMs: number
 ): Promise<DedupeOutcome> {
-  const existing = await db
-    .prepare(`SELECT alert_kind FROM posted_alerts WHERE alert_kind = ?`)
-    .bind(condition.kind)
-    .first<{ alert_kind: string }>();
-
   if (condition.firing) {
-    if (existing) return 'still-firing';
-    await db
-      .prepare(`INSERT INTO posted_alerts (alert_kind, posted_ts) VALUES (?, ?)`)
+    const result = await db
+      .prepare(`INSERT OR IGNORE INTO posted_alerts (alert_kind, posted_ts) VALUES (?, ?)`)
       .bind(condition.kind, nowMs)
       .run();
-    return 'first-fire';
+    return result.meta.changes === 1 ? 'first-fire' : 'still-firing';
   }
-  if (existing) {
-    await db.prepare(`DELETE FROM posted_alerts WHERE alert_kind = ?`).bind(condition.kind).run();
-    return 'cleared';
-  }
-  return 'still-clear';
+  // DELETE is already idempotent; meta.changes tells us whether the row
+  // existed before this run. No SELECT needed.
+  const result = await db
+    .prepare(`DELETE FROM posted_alerts WHERE alert_kind = ?`)
+    .bind(condition.kind)
+    .run();
+  return result.meta.changes === 1 ? 'cleared' : 'still-clear';
 }
 
 function formatAlert(condition: AlertCondition): string {

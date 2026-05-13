@@ -21,23 +21,27 @@ export async function runMilestoneWatch(
   nowMs: number
 ): Promise<{ intents: PostIntent[]; crossings: MilestoneCrossing[] }> {
   const count = await currentAllTimeUsers(db);
-  const reached = await loadReachedMilestones(db);
 
   const crossings: MilestoneCrossing[] = [];
   const intents: PostIntent[] = [];
   for (const threshold of MILESTONE_THRESHOLDS) {
     if (count < threshold) break; // ascending order — short-circuit
-    if (reached.has(threshold)) continue;
+    // Race-safe: try to claim the milestone via INSERT OR IGNORE and
+    // emit only if this run actually wrote the row. Two overlapping
+    // runs that both saw the same prior snapshot would otherwise both
+    // INSERT and the loser would crash on the PK violation, aborting
+    // any later thresholds in the loop.
+    const result = await db
+      .prepare(`INSERT OR IGNORE INTO reached_milestones (milestone, reached_ts) VALUES (?, ?)`)
+      .bind(threshold, nowMs)
+      .run();
+    if (result.meta.changes !== 1) continue;
     crossings.push({ milestone: threshold, count });
     intents.push({
       kind: 'milestone',
       milestone: threshold,
       markdown: formatMilestone(threshold, count),
     });
-    await db
-      .prepare(`INSERT INTO reached_milestones (milestone, reached_ts) VALUES (?, ?)`)
-      .bind(threshold, nowMs)
-      .run();
   }
   return { intents, crossings };
 }
@@ -45,13 +49,6 @@ export async function runMilestoneWatch(
 async function currentAllTimeUsers(db: D1Database): Promise<number> {
   const row = await db.prepare(`SELECT COUNT(*) AS n FROM users`).first<{ n: number }>();
   return row?.n ?? 0;
-}
-
-async function loadReachedMilestones(db: D1Database): Promise<Set<number>> {
-  const { results } = await db
-    .prepare(`SELECT milestone FROM reached_milestones`)
-    .all<{ milestone: number }>();
-  return new Set(results.map((r) => r.milestone));
 }
 
 function formatMilestone(milestone: number, count: number): string {

@@ -60,6 +60,22 @@ describe('runMilestoneWatch', () => {
     expect(intents).toEqual([]);
   });
 
+  it('is idempotent when a parallel run has already claimed an earlier threshold', async () => {
+    // Simulate the race: another concurrent watch wrote reached_milestones
+    // for 100 between this run's snapshot and its INSERT. Old code would
+    // crash on PK violation when this run's loop hit 100, aborting later
+    // thresholds. INSERT OR IGNORE must skip 100 silently and still
+    // emit 500.
+    await seedUsers(550);
+    await env.DB.prepare(`INSERT INTO reached_milestones (milestone, reached_ts) VALUES (100, ?)`)
+      .bind(NOW - 1000)
+      .run();
+    const { intents, crossings } = await runMilestoneWatch(env.DB, NOW);
+    expect(crossings.map((c) => c.milestone)).toEqual([500]);
+    expect(intents).toHaveLength(1);
+    expect(intents[0]).toMatchObject({ kind: 'milestone', milestone: 500 });
+  });
+
   it('only emits the newly crossed milestone when the user count grows', async () => {
     await seedUsers(150);
     await runMilestoneWatch(env.DB, NOW); // emits 100
