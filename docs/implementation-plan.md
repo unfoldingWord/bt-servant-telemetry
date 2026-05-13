@@ -1,6 +1,6 @@
 # bt-servant-telemetry — Implementation Plan
 
-> **Status:** Phases 1–6 **merged to `main`**. PR #2 (`be9c54f`) phases 1–3; PR #3 (`fccc4af`) phase 4; PR #4 (squash `d140d41`, 2026-05-12) phase 5 with one review-fix commit (`/api/*` 404 guard + drop misleading cohort delta arrows); PR #5 (squash `baa0609`, 2026-05-13) phase 6 with one review-fix commit (race-safe `INSERT OR IGNORE` dedupe in alerts + milestones). From here on, **one PR per phase off `main`**.
+> **Status:** Phases 1–7 **merged to `main`**. PR #2 (`be9c54f`) phases 1–3; PR #3 (`fccc4af`) phase 4; PR #4 (squash `d140d41`, 2026-05-12) phase 5 with one review-fix commit (`/api/*` 404 guard + drop misleading cohort delta arrows); PR #5 (squash `baa0609`, 2026-05-13) phase 6 with one review-fix commit (race-safe `INSERT OR IGNORE` dedupe); PR #6 (squash `aa90f70`, 2026-05-13) phase 7 with one review-fix commit (catch transport-level fetch rejects so a Zulip outage can't abort the sweep). From here on, **one PR per phase off `main`**.
 >
 > **Phase ledger:**
 >
@@ -9,8 +9,8 @@
 > - Phase 3 — Backfill script — ✅ done (in PR #2)
 > - Phase 4 — API layer — ✅ done (in PR #3)
 > - Phase 5 — Dashboard — ✅ done (in PR #4)
-> - Phase 6 — Scheduled handlers — ✅ done (in PR #5; sink is a console no-op until Phase 7)
-> - Phase 7 — Zulip integration — 🔄 in flight on `phase-7-zulip` branch (raw client + sink adapter + env-driven sink selection in `index.ts`; falls back to console sink when secrets aren't set)
+> - Phase 6 — Scheduled handlers — ✅ done (in PR #5)
+> - Phase 7 — Zulip integration — ✅ done (in PR #6)
 > - Phase 8 — Prod deploy (separately scoped; needs `CLOUDFLARE_API_TOKEN` GH secret + real D1 IDs in `wrangler.toml`; "Deploy to Dev" CI check failing until then is expected).
 >
 > **Path convention in this doc:** repo-relative paths are bare (`apps/web/...`); references to sibling repos use a leading `../` and are pointers to source-of-truth configs we cloned into this repo, not live runtime dependencies.
