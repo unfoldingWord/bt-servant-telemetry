@@ -30,7 +30,10 @@ crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *"]
 ENVIRONMENT = "development"
 TELEMETRY_EPOCH = "2026-04-24"
 CF_ACCOUNT_ID = "5a3ffd86280d3ed086be76d955829242"
-SOURCE_WORKER_NAME = "bt-servant-worker"
+# Local / no-env-flag wrangler dev pulls from staging upstream, matching the
+# deployed dev worker (env.dev). Prod is the only upstream that should ever
+# be hit, and only via [env.production] which sets this explicitly below.
+SOURCE_WORKER_NAME = "bt-servant-worker-staging"
 
 # Top-level D1 binding (placeholder ID — used by `wrangler dev` and tests via miniflare).
 # Per-env overrides below carry the real database IDs once `wrangler d1 create` has been run.
