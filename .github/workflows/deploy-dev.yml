@@ -1,60 +1,28 @@
 name: Deploy Dev
 
+# Fires after CI passes on a push to main (i.e. after PR merge).
+# Cloudflare Workers don't have per-PR preview URLs, so deploying every PR
+# would just clobber dev with unreviewed code. Gating on the post-merge CI
+# run means dev always reflects something that already passed review + CI.
 on:
-  pull_request:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
     branches: [main]
-    types: [opened, synchronize, reopened]
 
 jobs:
-  wait-for-ci:
-    name: Wait for CI
-    runs-on: ubuntu-latest
-    permissions:
-      checks: read
-    steps:
-      - name: Wait for CI Pass check
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const sha = context.payload.pull_request.head.sha;
-            const maxAttempts = 60;
-            const delaySeconds = 10;
-
-            for (let i = 0; i < maxAttempts; i++) {
-              const { data: checkRuns } = await github.rest.checks.listForRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: sha,
-                check_name: 'CI Pass',
-              });
-
-              const ciPass = checkRuns.check_runs[0];
-              if (ciPass) {
-                if (ciPass.conclusion === 'success') {
-                  console.log('CI Pass check succeeded');
-                  return;
-                }
-                if (ciPass.conclusion === 'failure') {
-                  core.setFailed('CI Pass check failed');
-                  return;
-                }
-              }
-
-              console.log(`Waiting for CI Pass... (attempt ${i + 1}/${maxAttempts})`);
-              await new Promise(r => setTimeout(r, delaySeconds * 1000));
-            }
-
-            core.setFailed('Timed out waiting for CI Pass check');
-
   deploy:
     name: Deploy to Dev
-    needs: [wait-for-ci]
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
+    # workflow_run fires on every CI completion — including failures. Only
+    # deploy when CI succeeded; otherwise the deploy job is a no-op.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The CI we're chaining off ran against this specific commit;
+          # check it out so the deploy matches what was verified.
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -68,8 +36,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      # Required scopes on CLOUDFLARE_API_TOKEN (repo secret):
+      #   Account → Workers Scripts → Edit
+      #   Account → D1 → Edit (for binding validation against the dev DB)
+      #   Account → Workers Tail → Read (for tail_consumers wiring)
+      # CF_ACCOUNT_ID lives in wrangler.toml [vars] now, but wrangler-action
+      # still accepts accountId for unambiguity in multi-account scenarios.
       - name: Deploy to Cloudflare Workers (dev)
-        id: deploy
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

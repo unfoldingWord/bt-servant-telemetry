@@ -1,20 +1,20 @@
 name: Deploy Staging
 
+# DORMANT until staging is bootstrapped (D1 created, secrets set, etc.).
+# When ready: switch the trigger back to
+#   workflow_run: { workflows: [CI], types: [completed], branches: [main] }
+# and add an `if:` guard for workflow_run.conclusion == 'success'.
+# Right now it's manual-only so a main merge doesn't auto-fail every time.
 on:
-  workflow_run:
-    workflows: ['CI']
-    types: [completed]
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
     name: Deploy to Staging
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
