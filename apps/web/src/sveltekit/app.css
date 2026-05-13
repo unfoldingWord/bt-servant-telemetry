@@ -13,6 +13,11 @@
   --font-mono:
     'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
     monospace;
+  /* Editorial serif — reserved for scripture / mission text. Source Serif 4
+     is Google Fonts' contemporary humanist serif (same family Medium uses)
+     and reads cleanly at small italic on dark backgrounds. */
+  --font-serif:
+    'Source Serif 4', 'Source Serif Pro', 'Source Serif', Georgia, 'Times New Roman', serif;
 
   /* Surfaces — near-black with two elevations.
      bg is the page; bg-card is for KPI / chart containers;

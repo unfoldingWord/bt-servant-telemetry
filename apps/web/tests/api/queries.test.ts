@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { queryHealth, querySnapshot, queryTrend, epochMs } from '../../src/api/queries.js';
+import {
+  queryEventHeatmap,
+  queryHealth,
+  querySnapshot,
+  querySparklines,
+  queryTrend,
+  epochMs,
+} from '../../src/api/queries.js';
 
 declare module 'cloudflare:test' {
   interface ProvidedEnv {
@@ -130,6 +137,8 @@ describe('querySnapshot', () => {
     expect(snap.distinct_users_30d).toBe(0);
     expect(snap.distinct_users_fixed_epoch).toBe(0);
     expect(snap.returning_users).toBe(0);
+    expect(snap.curious_users).toBe(0);
+    expect(snap.faithful_users).toBe(0);
     expect(snap.login_count).toBe(0);
     expect(snap.chat_total_ms_p50).toBeNull();
     expect(snap.chat_total_ms_p95).toBeNull();
@@ -137,6 +146,30 @@ describe('querySnapshot', () => {
     expect(snap.chat_busy_reject_rate_1h_pct).toBe(0);
     expect(snap.epoch_iso).toBe(EPOCH_ISO);
     expect(snap.generated_at_ts).toBe(NOW);
+  });
+
+  it('user-cohort counters tier correctly: returning >= curious >= faithful', async () => {
+    // 5 users at 1, 2, 5, 10, 15 active days. Returning (>=2) counts 4;
+    // curious (>=5) counts 3; faithful (>=10) counts 2.
+    const userSpecs: Array<{ char: string; days: number }> = [
+      { char: 'a', days: 1 },
+      { char: 'b', days: 2 },
+      { char: 'c', days: 5 },
+      { char: 'd', days: 10 },
+      { char: 'e', days: 15 },
+    ];
+    for (const spec of userSpecs) {
+      await insertUser({
+        user_hash: spec.char.repeat(64),
+        first_seen_ts: EPOCH_MS,
+        days_active_count: spec.days,
+        org: `org-${spec.char}`,
+      });
+    }
+    const snap = await querySnapshot(env.DB, EPOCH_ISO, NOW);
+    expect(snap.returning_users).toBe(4);
+    expect(snap.curious_users).toBe(3);
+    expect(snap.faithful_users).toBe(2);
   });
 
   it('distinct_users_fixed_epoch excludes users with first_seen_ts before epoch', async () => {
@@ -227,6 +260,8 @@ describe('querySnapshot', () => {
     });
     const snap = await querySnapshot(env.DB, EPOCH_ISO, NOW);
     expect(snap.returning_users).toBe(2);
+    expect(snap.curious_users).toBe(1);
+    expect(snap.faithful_users).toBe(0);
   });
 
   it('login_count equals total rows in user_active_days', async () => {
@@ -384,6 +419,92 @@ describe('queryTrend', () => {
     const byDay = new Map(series.points.map((p) => [p.day, p.value]));
     expect(byDay.get(20260510)).toBeGreaterThan(180);
     expect(byDay.get(20260510)).toBeLessThanOrEqual(200);
+  });
+});
+
+describe('querySparklines', () => {
+  it('returns the full payload shape with all arrays equal in length', async () => {
+    const payload = await querySparklines(env.DB, 7, NOW);
+    expect(payload.days).toBe(7);
+    expect(payload.error_rate.length).toBe(7);
+    expect(payload.returning_users.length).toBe(7);
+    expect(payload.faithful_users.length).toBe(7);
+    expect(payload.curious_users.length).toBe(7);
+    expect(payload.chat_p95.length).toBe(7);
+  });
+
+  it('zero-fills empty days rather than returning nulls', async () => {
+    const payload = await querySparklines(env.DB, 7, NOW);
+    expect(payload.error_rate.every((v) => v === 0)).toBe(true);
+    expect(payload.returning_users.every((v) => v === 0)).toBe(true);
+  });
+
+  it('returning_users sparkline counts distinct (user_hash, org) per day', async () => {
+    const dayA = Date.UTC(2026, 4, 10, 12, 0, 0);
+    await insertEvent({
+      request_id: 'r1',
+      event: 'request_received',
+      ts: dayA,
+      user_hash: 'a'.repeat(64),
+      org: 'unfoldingWord',
+    });
+    await insertEvent({
+      request_id: 'r2',
+      event: 'request_received',
+      ts: dayA,
+      user_hash: 'a'.repeat(64),
+      org: 'wordcollective',
+    });
+    const payload = await querySparklines(env.DB, 7, NOW);
+    // Oldest-first, 7 points covering 20260506..20260512. dayA = 20260510.
+    expect(payload.returning_users[4]).toBe(2);
+  });
+
+  it('faithful and curious sparklines mirror returning_users (daily activity proxy)', async () => {
+    const dayA = Date.UTC(2026, 4, 10, 12, 0, 0);
+    await insertEvent({
+      request_id: 'r1',
+      event: 'request_received',
+      ts: dayA,
+      user_hash: 'a'.repeat(64),
+      org: 'unfoldingWord',
+    });
+    await insertEvent({
+      request_id: 'r2',
+      event: 'request_received',
+      ts: dayA,
+      user_hash: 'b'.repeat(64),
+      org: 'wordcollective',
+    });
+    const payload = await querySparklines(env.DB, 7, NOW);
+    expect(payload.faithful_users).toEqual(payload.returning_users);
+    expect(payload.curious_users).toEqual(payload.returning_users);
+    expect(payload.returning_users[4]).toBe(2);
+  });
+});
+
+describe('queryEventHeatmap', () => {
+  it('returns empty buckets when DB has no events', async () => {
+    const payload = await queryEventHeatmap(env.DB, 30, NOW);
+    expect(payload.days).toBe(30);
+    expect(payload.buckets).toEqual([]);
+  });
+
+  it('buckets events by (sqlite_dow, hour)', async () => {
+    // 2026-05-10 (Sunday) 14:30 UTC -- sqlite dow=0, hour=14.
+    const sundayAfternoon = Date.UTC(2026, 4, 10, 14, 30, 0);
+    // 2026-05-11 (Monday) 09:15 UTC -- sqlite dow=1, hour=9.
+    const mondayMorning = Date.UTC(2026, 4, 11, 9, 15, 0);
+    for (let i = 0; i < 3; i++) {
+      await insertEvent({ request_id: `s${i}`, event: 'request_received', ts: sundayAfternoon });
+    }
+    await insertEvent({ request_id: 'm1', event: 'request_received', ts: mondayMorning });
+
+    const payload = await queryEventHeatmap(env.DB, 30, NOW);
+    const sundayCell = payload.buckets.find((b) => b.dow === 0 && b.hour === 14);
+    const mondayCell = payload.buckets.find((b) => b.dow === 1 && b.hour === 9);
+    expect(sundayCell?.count).toBe(3);
+    expect(mondayCell?.count).toBe(1);
   });
 });
 

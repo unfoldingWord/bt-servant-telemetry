@@ -24,6 +24,8 @@ export type MetricsSnapshot = {
 
   // Secondary KPIs
   returning_users: number;
+  faithful_users: number;
+  curious_users: number;
   login_count: number;
   chat_total_ms_p50: number | null;
   chat_total_ms_p95: number | null;
@@ -46,4 +48,29 @@ export type TrendSeries = {
   metric: TrendMetric;
   days: number;
   points: TrendPoint[];
+};
+
+/**
+ * Compact per-day series for the dashboard's KPI tile sparklines.
+ * All arrays are oldest-first, padded with 0 for empty days, length
+ * equal to `days` from the request.
+ */
+export type SparklinesPayload = {
+  days: number;
+  error_rate: number[];
+  returning_users: number[];
+  faithful_users: number[];
+  curious_users: number[];
+  chat_p95: number[];
+};
+
+/**
+ * Activity rhythm heatmap. Each cell = event count summed at a given
+ * (day-of-week, hour-of-day) bucket across the lookback window. dow is
+ * 0=Sunday through 6=Saturday — matching SQLite's strftime('%w'). The
+ * dashboard re-orders to Monday-first on the client.
+ */
+export type EventHeatmapPayload = {
+  days: number;
+  buckets: Array<{ dow: number; hour: number; count: number }>;
 };

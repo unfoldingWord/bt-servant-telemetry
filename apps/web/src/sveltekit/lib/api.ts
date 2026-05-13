@@ -1,6 +1,8 @@
 import type {
+  EventHeatmapPayload,
   HealthSnapshot,
   MetricsSnapshot,
+  SparklinesPayload,
   TrendMetric,
   TrendSeries,
 } from '@bt-servant-telemetry/shared';
@@ -31,4 +33,12 @@ export function fetchHealth(): Promise<HealthSnapshot> {
 
 export function fetchTrend(metric: TrendMetric, days = 30): Promise<TrendSeries> {
   return getJson<TrendSeries>(`/api/trend?metric=${metric}&days=${days}`);
+}
+
+export function fetchSparklines(days = 30): Promise<SparklinesPayload> {
+  return getJson<SparklinesPayload>(`/api/sparklines?days=${days}`);
+}
+
+export function fetchEventHeatmap(days = 30): Promise<EventHeatmapPayload> {
+  return getJson<EventHeatmapPayload>(`/api/event-heatmap?days=${days}`);
 }

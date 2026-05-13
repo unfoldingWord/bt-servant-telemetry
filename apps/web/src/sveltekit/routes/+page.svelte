@@ -1,8 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { MetricsSnapshot } from '@bt-servant-telemetry/shared';
-  import { fetchSnapshot } from '$lib/api';
+  import type {
+    EventHeatmapPayload,
+    MetricsSnapshot,
+    SparklinesPayload,
+    TrendSeries,
+  } from '@bt-servant-telemetry/shared';
+  import { fetchEventHeatmap, fetchSnapshot, fetchSparklines, fetchTrend } from '$lib/api';
+  import ActivityHeatmap from '$lib/components/ActivityHeatmap.svelte';
   import FlipCounter from '$lib/components/FlipCounter.svelte';
+  import KpiTile from '$lib/components/KpiTile.svelte';
+  import LatencyTile from '$lib/components/LatencyTile.svelte';
+  import TrendChart from '$lib/components/TrendChart.svelte';
 
   type Window = 'all_time' | 'd30' | 'fixed';
 
@@ -13,6 +22,11 @@
   };
 
   let snapshot = $state<MetricsSnapshot | null>(null);
+  let sparklines = $state<SparklinesPayload | null>(null);
+  let trendDistinctUsers = $state<TrendSeries | null>(null);
+  let trendErrorRate = $state<TrendSeries | null>(null);
+  let trendP95 = $state<TrendSeries | null>(null);
+  let eventHeatmap = $state<EventHeatmapPayload | null>(null);
   let window = $state<Window>('all_time');
   let loadError = $state<string | null>(null);
 
@@ -33,11 +47,23 @@
   }
 
   onMount(async () => {
-    try {
-      snapshot = await fetchSnapshot();
-    } catch (err) {
-      loadError = err instanceof Error ? err.message : String(err);
-    }
+    // All payloads fire in parallel — none share dependencies and the page
+    // is faster if they all start immediately rather than chained.
+    const [snap, spk, td, te, tp, eh] = await Promise.allSettled([
+      fetchSnapshot(),
+      fetchSparklines(30),
+      fetchTrend('distinct_users', 30),
+      fetchTrend('error_rate', 30),
+      fetchTrend('p95_latency', 30),
+      fetchEventHeatmap(30),
+    ]);
+    if (snap.status === 'fulfilled') snapshot = snap.value;
+    else loadError = snap.reason instanceof Error ? snap.reason.message : String(snap.reason);
+    if (spk.status === 'fulfilled') sparklines = spk.value;
+    if (td.status === 'fulfilled') trendDistinctUsers = td.value;
+    if (te.status === 'fulfilled') trendErrorRate = te.value;
+    if (tp.status === 'fulfilled') trendP95 = tp.value;
+    if (eh.status === 'fulfilled') eventHeatmap = eh.value;
   });
 </script>
 
@@ -122,21 +148,121 @@
     {/if}
   </section>
 
+  <!-- Mission verse. Lives as a quiet band between the loud hero and the
+       data tiles — Source Serif italic, centered, citation underneath in
+       small-caps. Reads as a deliberate pause before operational data. -->
+  <aside class="mb-12 flex flex-col items-center gap-3 text-center">
+    <blockquote
+      class="text-fg-muted max-w-2xl text-xl leading-snug italic"
+      style="font-family: var(--font-serif); font-optical-sizing: auto;"
+    >
+      &ldquo;The unfolding of your words gives light.&rdquo;
+    </blockquote>
+    <cite
+      class="text-fg-subtle text-[0.65rem] tracking-[0.18em] uppercase not-italic"
+      style="font-family: var(--font-serif);"
+    >
+      Psalm 119:130
+    </cite>
+  </aside>
+
   <hr class="hairline mb-12" />
 
-  <!-- KPI grid still placeholder — wired in task #11 with KpiBarChart cards. -->
-  <section class="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
-    {#each [['returning', snapshot?.returning_users], ['logins', snapshot?.login_count], ['p50 chat', snapshot?.chat_total_ms_p50], ['p95 chat', snapshot?.chat_total_ms_p95], ['error rate', snapshot?.error_rate_1h_pct]] as [label, value]}
-      <div class="border-border bg-bg-card rounded-2xl border p-5">
-        <p class="text-fg-subtle mb-3 text-[0.65rem] tracking-widest uppercase">{label}</p>
-        <p class="text-fg tabular text-2xl font-light">
-          {value ?? '—'}
-        </p>
-      </div>
-    {/each}
+  <!-- KPI grid. Tile order from left to right is intentional:
+       returning → curious → faithful escalates user loyalty; chat
+       latency is operational; error rate is the alarm signal and sits
+       on the far right so the eye sweeps from "engagement" to "danger". -->
+  <section class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-5">
+    <KpiTile
+      label="returning users"
+      value={snapshot?.returning_users ?? null}
+      format="integer"
+      caption="≥ 2 active days"
+      sparkline={sparklines?.returning_users ?? null}
+      direction="higher_is_better"
+    />
+
+    <KpiTile
+      label="curious users"
+      value={snapshot?.curious_users ?? null}
+      format="integer"
+      caption="≥ 5 active days"
+      sparkline={sparklines?.curious_users ?? null}
+      direction="higher_is_better"
+    />
+
+    <KpiTile
+      label="faithful users"
+      value={snapshot?.faithful_users ?? null}
+      format="integer"
+      caption="≥ 10 active days"
+      sparkline={sparklines?.faithful_users ?? null}
+      direction="higher_is_better"
+    />
+
+    <LatencyTile
+      label="chat latency"
+      p50={snapshot?.chat_total_ms_p50 ?? null}
+      p95={snapshot?.chat_total_ms_p95 ?? null}
+      sparkline={sparklines?.chat_p95 ?? null}
+      caption="trailing 1h"
+    />
+
+    <KpiTile
+      label="error rate"
+      value={snapshot?.error_rate_1h_pct ?? null}
+      format="percent"
+      caption="trailing 1h"
+      sparkline={sparklines?.error_rate ?? null}
+      direction="lower_is_better"
+      accent
+    />
+  </section>
+
+  <!-- Trend section. 2-up grid at lg+ so the four charts read as tiles
+       rather than a long stack. Each chart drills into one metric:
+         • distinct users / day → bar (discrete daily count)
+         • error rate / day    → line + 2% threshold ref
+         • p95 latency / day   → line (continuous trend)
+         • activity rhythm     → hour-of-week heatmap (operational pattern)
+       Heights normalized so the 2x2 grid lines up cleanly. -->
+  <section class="mt-16 grid grid-cols-1 gap-4 lg:grid-cols-2">
+    <TrendChart
+      label="distinct users per day"
+      caption="last 30 days"
+      series={trendDistinctUsers}
+      kind="bar"
+      format="integer"
+      height={220}
+    />
+    <TrendChart
+      label="error rate per day"
+      caption="last 30 days · 2% degraded"
+      series={trendErrorRate}
+      kind="line"
+      format="percent"
+      threshold={2}
+      height={220}
+      accent
+    />
+    <TrendChart
+      label="p95 chat latency per day"
+      caption="last 30 days"
+      series={trendP95}
+      kind="line"
+      format="duration_ms"
+      height={220}
+    />
+
+    <ActivityHeatmap
+      label="activity rhythm"
+      caption="events by hour-of-week · last 30 days"
+      payload={eventHeatmap}
+      height={220}
+    />
   </section>
 
   <p class="text-fg-subtle mt-16 text-center text-[0.65rem] tracking-widest uppercase">
-    phase 5 · hero wired · charts next
+    phase 5 · charts + heatmap wired · health pill next
   </p>
 </div>

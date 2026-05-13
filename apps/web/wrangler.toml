@@ -10,6 +10,11 @@ compatibility_date = "2026-04-01"
 directory = "./build"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
+# Worker runs first so /api/* and /health hit Hono, /tail hits the tail
+# handler, and only unhandled paths fall through to env.ASSETS.fetch()
+# from index.ts. Without this, the assets layer intercepts ALL requests
+# and returns 405 for non-GET methods regardless of worker routes.
+run_worker_first = true
 
 [observability]
 enabled = true

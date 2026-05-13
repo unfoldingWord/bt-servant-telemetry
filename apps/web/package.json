@@ -7,6 +7,7 @@
     "dev": "wrangler dev",
     "dev:ui": "vite dev",
     "backfill": "wrangler dev src/scripts/backfill.ts",
+    "seed": "wrangler dev src/scripts/seed-dev.ts --port 8788",
     "deploy": "wrangler deploy",
     "build": "svelte-kit sync && vite build && wrangler deploy --dry-run",
     "test": "vitest run",
@@ -16,7 +17,9 @@
   "dependencies": {
     "@bt-servant-telemetry/shared": "workspace:*",
     "@pqina/flip": "^1.6.4",
+    "echarts": "^5.6.0",
     "hono": "^4.12.18",
+    "svelte-echarts": "^1.0.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

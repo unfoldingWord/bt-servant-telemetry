@@ -1,5 +1,11 @@
 import { Hono } from 'hono';
-import { queryHealth, querySnapshot, queryTrend } from './queries.js';
+import {
+  queryEventHeatmap,
+  queryHealth,
+  querySnapshot,
+  querySparklines,
+  queryTrend,
+} from './queries.js';
 import type { TrendMetric } from '@bt-servant-telemetry/shared';
 
 type Env = {
@@ -52,4 +58,25 @@ apiRoutes.get('/trend', async (c) => {
   }
   const series = await queryTrend(c.env.DB, metricParam, days, Date.now());
   return c.json(series);
+});
+
+// Batch payload for KPI tile sparklines — avoids firing N /api/trend
+// calls on every dashboard load. Same `days` validation as /api/trend.
+apiRoutes.get('/sparklines', async (c) => {
+  const days = parseTrendDays(c.req.query('days'));
+  if (days === null) {
+    return c.json({ error: `days must be an integer 1..${MAX_TREND_DAYS}` }, 400);
+  }
+  const payload = await querySparklines(c.env.DB, days, Date.now());
+  return c.json(payload);
+});
+
+// (day-of-week × hour) event-volume buckets for the activity heatmap.
+apiRoutes.get('/event-heatmap', async (c) => {
+  const days = parseTrendDays(c.req.query('days'));
+  if (days === null) {
+    return c.json({ error: `days must be an integer 1..${MAX_TREND_DAYS}` }, 400);
+  }
+  const payload = await queryEventHeatmap(c.env.DB, days, Date.now());
+  return c.json(payload);
 });
