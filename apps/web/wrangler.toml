@@ -29,8 +29,11 @@ crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *"]
 [vars]
 ENVIRONMENT = "development"
 TELEMETRY_EPOCH = "2026-04-24"
-CF_ACCOUNT_ID = "REPLACE_WITH_ACCOUNT_ID"
-SOURCE_WORKER_NAME = "bt-servant-worker"
+CF_ACCOUNT_ID = "5a3ffd86280d3ed086be76d955829242"
+# Local / no-env-flag wrangler dev pulls from staging upstream, matching the
+# deployed dev worker (env.dev). Prod is the only upstream that should ever
+# be hit, and only via [env.production] which sets this explicitly below.
+SOURCE_WORKER_NAME = "bt-servant-worker-staging"
 
 # Top-level D1 binding (placeholder ID — used by `wrangler dev` and tests via miniflare).
 # Per-env overrides below carry the real database IDs once `wrangler d1 create` has been run.
@@ -49,8 +52,9 @@ name = "bt-servant-telemetry-dev"
 [env.dev.vars]
 ENVIRONMENT = "dev"
 TELEMETRY_EPOCH = "2026-04-24"
-CF_ACCOUNT_ID = "REPLACE_WITH_ACCOUNT_ID"
-SOURCE_WORKER_NAME = "bt-servant-worker"
+CF_ACCOUNT_ID = "5a3ffd86280d3ed086be76d955829242"
+# Dev consumes staging upstream so live tail + backfill agree.
+SOURCE_WORKER_NAME = "bt-servant-worker-staging"
 
 [env.dev.observability]
 enabled = true
@@ -62,7 +66,7 @@ crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *"]
 [[env.dev.d1_databases]]
 binding = "DB"
 database_name = "bt-servant-telemetry-dev"
-database_id = "REPLACE_AFTER_WRANGLER_D1_CREATE_DEV"
+database_id = "032e0aea-103a-4349-ac9c-57a3b3bba1db"
 migrations_dir = "migrations"
 
 # --- Staging: main branch deploys ---
@@ -73,7 +77,7 @@ name = "bt-servant-telemetry-staging"
 [env.staging.vars]
 ENVIRONMENT = "staging"
 TELEMETRY_EPOCH = "2026-04-24"
-CF_ACCOUNT_ID = "REPLACE_WITH_ACCOUNT_ID"
+CF_ACCOUNT_ID = "5a3ffd86280d3ed086be76d955829242"
 SOURCE_WORKER_NAME = "bt-servant-worker"
 
 [env.staging.observability]
@@ -97,7 +101,7 @@ name = "bt-servant-telemetry-production"
 [env.production.vars]
 ENVIRONMENT = "production"
 TELEMETRY_EPOCH = "2026-04-24"
-CF_ACCOUNT_ID = "REPLACE_WITH_ACCOUNT_ID"
+CF_ACCOUNT_ID = "5a3ffd86280d3ed086be76d955829242"
 SOURCE_WORKER_NAME = "bt-servant-worker"
 
 [env.production.observability]
@@ -111,5 +115,5 @@ crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *"]
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "bt-servant-telemetry-production"
-database_id = "REPLACE_AFTER_WRANGLER_D1_CREATE_PROD"
+database_id = "07faa0db-3798-40df-af87-2fbabb05fe4f"
 migrations_dir = "migrations"

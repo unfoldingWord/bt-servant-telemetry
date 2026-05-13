@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "dev:ui": "vite dev",
-    "backfill": "wrangler dev src/scripts/backfill.ts",
+    "backfill": "wrangler dev --env dev src/scripts/backfill.ts",
     "seed": "wrangler dev src/scripts/seed-dev.ts --port 8788",
     "deploy": "wrangler deploy",
     "build": "svelte-kit sync && vite build && wrangler deploy --dry-run",
