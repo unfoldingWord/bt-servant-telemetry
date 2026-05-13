@@ -229,6 +229,12 @@
        latency is operational; error rate is the alarm signal and sits
        on the far right so the eye sweeps from "engagement" to "danger". -->
   <section class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-5">
+    <!-- Cohort tiles deliberately suppress the delta badge: the
+         sparkline shows overall daily activity, not per-day cohort
+         momentum, so a derived delta would silently contradict the
+         cumulative headline count. The sparkline remains as ambient
+         engagement context. Computing real per-day cohort series is a
+         heavier query and a future refinement. -->
     <KpiTile
       label="returning users"
       value={snapshot?.returning_users ?? null}
@@ -236,6 +242,7 @@
       caption="≥ 2 active days"
       sparkline={sparklines?.returning_users ?? null}
       direction="higher_is_better"
+      showDelta={false}
     />
 
     <KpiTile
@@ -245,6 +252,7 @@
       caption="≥ 5 active days"
       sparkline={sparklines?.curious_users ?? null}
       direction="higher_is_better"
+      showDelta={false}
     />
 
     <KpiTile
@@ -254,6 +262,7 @@
       caption="≥ 10 active days"
       sparkline={sparklines?.faithful_users ?? null}
       direction="higher_is_better"
+      showDelta={false}
     />
 
     <LatencyTile

@@ -27,12 +27,18 @@ app.get('/health', (c) =>
 
 app.route('/api', apiRoutes);
 
-// Static dashboard fallback. Anything not matched above falls through to
-// the SvelteKit-built SPA bound at ASSETS. Workers Static Assets handles
-// SPA routing via `not_found_handling = "single-page-application"` in
-// wrangler.toml, so deep links resolve to index.html and the client
-// router takes over.
-app.all('*', (c) => {
+// Anything under /api that didn't match a real route is a typo or a
+// removed endpoint — return a proper 404 instead of falling through to
+// the catch-all and serving the SPA's index.html. Without this guard,
+// `GET /api/typo` would respond 200 with HTML and the caller would
+// blow up parsing JSON.
+app.all('/api/*', (c) => c.json({ error: 'not_found' }, 404));
+
+// Static dashboard fallback. Page navigations only — Workers Static
+// Assets only serves GET/HEAD anyway; the explicit method restriction
+// makes the contract surface honest and stops accidental POST/PUT/
+// PATCH/DELETE from being mistaken for successful SPA hits.
+app.on(['GET', 'HEAD'], '*', (c) => {
   if (c.env.ASSETS) return c.env.ASSETS.fetch(c.req.raw);
   return c.notFound();
 });

@@ -19,6 +19,23 @@ beforeEach(async () => {
   await env.DB.exec('DELETE FROM user_active_days');
 });
 
+describe('unknown /api/* routes', () => {
+  it('returns 404 JSON instead of falling through to the SPA', async () => {
+    // Regression guard for the PR #4 review: a typo'd /api path used
+    // to hit app.all('*') and respond 200 with index.html, making
+    // client bugs invisible until JSON.parse blew up on HTML.
+    const res = await SELF.fetch('http://test/api/typo');
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe('not_found');
+  });
+
+  it('rejects POST to unknown /api path with 404, not 405 from assets', async () => {
+    const res = await SELF.fetch('http://test/api/does-not-exist', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('GET /api/health', () => {
   it('returns down when DB is empty', async () => {
     const res = await SELF.fetch('http://test/api/health');

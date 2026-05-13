@@ -18,6 +18,13 @@
     /** Determines whether ▲ in the delta badge is good (engagement up)
         or bad (error rate up). Defaults to higher-is-better. */
     direction?: MetricDirection;
+    /** Whether to render the delta-momentum badge next to the value.
+        Set false when the sparkline does NOT represent the headline
+        metric — e.g. cohort tiles where the sparkline is overall daily
+        activity but the headline is a cumulative cohort count. A delta
+        derived from a different series would silently contradict the
+        headline number. */
+    showDelta?: boolean;
   };
 
   let {
@@ -28,6 +35,7 @@
     caption,
     accent = false,
     direction = 'higher_is_better',
+    showDelta = true,
   }: Props = $props();
 
   const display = $derived(formatMetric(value, format));
@@ -43,7 +51,9 @@
 
   <div class="flex items-baseline gap-2">
     <p class="text-fg tabular text-3xl font-light leading-none">{display}</p>
-    <DeltaBadge series={sparkline} {direction} />
+    {#if showDelta}
+      <DeltaBadge series={sparkline} {direction} />
+    {/if}
   </div>
 
   <div class="mt-auto">
