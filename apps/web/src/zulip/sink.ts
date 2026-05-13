@@ -15,10 +15,16 @@ import { postZulipMessage, type ZulipConfig } from './client.js';
 export function createZulipSink(config: ZulipConfig, fetchImpl: typeof fetch = fetch): Sink {
   return async (intent) => {
     const result = await postZulipMessage(config, intent.markdown, fetchImpl);
-    if (!result.ok) {
+    if (result.ok) return;
+    if (result.reason === 'http') {
       console.error(
-        `zulip POST failed for intent kind=${intent.kind} status=${result.status} body=${result.body}`
+        `zulip POST failed for intent kind=${intent.kind} reason=http status=${result.status} body=${result.body}`
       );
+      return;
     }
+    // Transport-level (DNS / TLS / connectivity) — no HTTP status exists.
+    console.error(
+      `zulip POST failed for intent kind=${intent.kind} reason=transport error=${result.error}`
+    );
   };
 }

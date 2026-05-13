@@ -33,15 +33,31 @@ describe('postZulipMessage', () => {
     expect(body.get('content')).toBe('**hello** world');
   });
 
-  it('returns ok=false with the response body when Zulip returns a non-2xx', async () => {
+  it('returns reason=http with body when Zulip returns a non-2xx', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValue(new Response(JSON.stringify({ msg: 'Invalid stream' }), { status: 400 }));
     const result = await postZulipMessage(config, 'irrelevant', fetchMock);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('http');
+    if (result.reason !== 'http') throw new Error('unreachable');
     expect(result.status).toBe(400);
     expect(result.body).toContain('Invalid stream');
+  });
+
+  it('returns reason=transport when fetch rejects (DNS / TLS / connectivity) instead of throwing', async () => {
+    // Network-level failure must honor the same non-throwing contract as
+    // HTTP non-2xx, otherwise a Zulip outage aborts the rest of the
+    // scheduled sweep after dedupe rows are already written.
+    const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new TypeError('fetch failed'));
+    const result = await postZulipMessage(config, 'irrelevant', fetchMock);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('transport');
+    if (result.reason !== 'transport') throw new Error('unreachable');
+    expect(result.error).toContain('TypeError');
+    expect(result.error).toContain('fetch failed');
   });
 
   it('round-trips multi-line markdown content via URL encoding', async () => {

@@ -31,7 +31,7 @@ describe('createZulipSink', () => {
     expect(bodies).toEqual(['reconcile body', 'digest body', 'alert body', 'milestone body']);
   });
 
-  it('logs and swallows a failed POST so a Zulip outage cannot crash the sweep', async () => {
+  it('logs and swallows an HTTP non-2xx so a Zulip-side error cannot crash the sweep', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -45,8 +45,27 @@ describe('createZulipSink', () => {
     expect(errorSpy).toHaveBeenCalledTimes(1);
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(message).toContain('kind=alert');
+    expect(message).toContain('reason=http');
     expect(message).toContain('status=429');
     expect(message).toContain('rate limited');
+    errorSpy.mockRestore();
+  });
+
+  it('logs and swallows a transport-level fetch rejection (DNS / TLS / connectivity)', async () => {
+    // Regression for PR #6 review: a fetch reject must not propagate
+    // out of the sink and abort later intents in the same sweep.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new TypeError('fetch failed'));
+    const sink = createZulipSink(config, fetchMock);
+
+    await expect(sink({ kind: 'digest', markdown: 'irrelevant' })).resolves.toBeUndefined();
+
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toContain('kind=digest');
+    expect(message).toContain('reason=transport');
+    expect(message).toContain('TypeError');
+    expect(message).toContain('fetch failed');
     errorSpy.mockRestore();
   });
 });
