@@ -1,6 +1,6 @@
 # bt-servant-telemetry — Implementation Plan
 
-> **Status:** Phases 1–4 **merged to `main`**. PR #2 (squash `be9c54f`, 2026-05-12) landed phases 1–3; PR #3 (squash `fccc4af`, 2026-05-12) landed phase 4 with two review-fix commits before merge (multi-tenant `(user_hash, org)` distinct counts; strict `days` validation on `/api/trend`). From here on, **one PR per phase off `main`**.
+> **Status:** Phases 1–5 **merged to `main`**. PR #2 (`be9c54f`) phases 1–3; PR #3 (`fccc4af`) phase 4; PR #4 (squash `d140d41`, 2026-05-12) phase 5 with one review-fix commit (`/api/*` 404 guard + drop misleading cohort delta arrows). From here on, **one PR per phase off `main`**.
 >
 > **Phase ledger:**
 >
@@ -8,7 +8,8 @@
 > - Phase 2 — D1 schema + redact + tail handler — ✅ done (in PR #2)
 > - Phase 3 — Backfill script — ✅ done (in PR #2)
 > - Phase 4 — API layer — ✅ done (in PR #3)
-> - Phase 5 — Dashboard — 🚧 in PR on `phase-5-dashboard`
+> - Phase 5 — Dashboard — ✅ done (in PR #4)
+> - Phase 6 — Scheduled handlers — ⏳ next
 > - Phase 6 — Scheduled handlers — pending
 > - Phase 7 — Zulip integration — pending
 > - Phase 8 — Prod deploy (separately scoped; needs `CLOUDFLARE_API_TOKEN` GH secret + real D1 IDs in `wrangler.toml`; "Deploy to Dev" CI check failing until then is expected).
