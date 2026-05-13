@@ -9,8 +9,7 @@
 > - Phase 3 — Backfill script — ✅ done (in PR #2)
 > - Phase 4 — API layer — ✅ done (in PR #3)
 > - Phase 5 — Dashboard — ✅ done (in PR #4)
-> - Phase 6 — Scheduled handlers — ⏳ next
-> - Phase 6 — Scheduled handlers — pending
+> - Phase 6 — Scheduled handlers — 🔄 in flight on `phase-6` branch (dispatcher + 4 jobs + dedupe + tests; sink is a console no-op until Phase 7)
 > - Phase 7 — Zulip integration — pending
 > - Phase 8 — Prod deploy (separately scoped; needs `CLOUDFLARE_API_TOKEN` GH secret + real D1 IDs in `wrangler.toml`; "Deploy to Dev" CI check failing until then is expected).
 >
