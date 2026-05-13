@@ -41,6 +41,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      # wrangler.toml's [assets] directory = "./build" is the prerendered
+      # SPA. CI runs on a fresh checkout where that dir doesn't exist yet,
+      # so wrangler deploy refuses with "assets.directory does not exist."
+      # Build the SPA before invoking wrangler. (build:assets skips the
+      # `wrangler deploy --dry-run` tail of the full `build` script — the
+      # real deploy in the next step is the validation we actually want.)
+      - name: Build SPA assets
+        working-directory: apps/web
+        run: pnpm run build:assets
+
       # Required scopes on CLOUDFLARE_API_TOKEN (repo secret):
       #   Account → Workers Scripts → Edit
       #   Account → D1 → Edit (for binding validation against the dev DB)

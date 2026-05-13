@@ -28,6 +28,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      # See deploy-dev.yml for why this step exists. Same root cause:
+      # [assets] directory = "./build" must exist before wrangler deploy.
+      - name: Build SPA assets
+        working-directory: apps/web
+        run: pnpm run build:assets
+
       - name: Deploy to Cloudflare Workers (staging)
         uses: cloudflare/wrangler-action@v3
         with:
