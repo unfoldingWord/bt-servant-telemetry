@@ -128,15 +128,19 @@ export default [
   {
     ignores: [
       'dist/',
+      'build/',
       'node_modules/',
       'coverage/',
       '**/dist/',
+      '**/build/',
       '**/node_modules/',
       '**/.wrangler/',
       '**/.svelte-kit/',
       '**/*.config.js',
       '**/*.config.ts',
       '**/*.config.mjs',
+      // .svelte files are handled by svelte-check, not eslint, in this repo.
+      '**/*.svelte',
     ],
   },
 ];

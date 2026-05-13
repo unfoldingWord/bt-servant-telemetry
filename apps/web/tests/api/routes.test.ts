@@ -19,6 +19,23 @@ beforeEach(async () => {
   await env.DB.exec('DELETE FROM user_active_days');
 });
 
+describe('unknown /api/* routes', () => {
+  it('returns 404 JSON instead of falling through to the SPA', async () => {
+    // Regression guard for the PR #4 review: a typo'd /api path used
+    // to hit app.all('*') and respond 200 with index.html, making
+    // client bugs invisible until JSON.parse blew up on HTML.
+    const res = await SELF.fetch('http://test/api/typo');
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe('not_found');
+  });
+
+  it('rejects POST to unknown /api path with 404, not 405 from assets', async () => {
+    const res = await SELF.fetch('http://test/api/does-not-exist', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('GET /api/health', () => {
   it('returns down when DB is empty', async () => {
     const res = await SELF.fetch('http://test/api/health');
@@ -51,6 +68,8 @@ describe('GET /api/snapshot', () => {
       distinct_users_30d: expect.any(Number),
       distinct_users_fixed_epoch: expect.any(Number),
       returning_users: expect.any(Number),
+      curious_users: expect.any(Number),
+      faithful_users: expect.any(Number),
       login_count: expect.any(Number),
       error_rate_1h_pct: expect.any(Number),
       chat_busy_reject_rate_1h_pct: expect.any(Number),
@@ -107,5 +126,53 @@ describe('GET /api/trend', () => {
     const res = await SELF.fetch('http://test/api/trend?metric=error_rate&days=7');
     const body = (await res.json()) as { points: unknown[] };
     expect(body.points.length).toBe(7);
+  });
+});
+
+describe('GET /api/event-heatmap', () => {
+  it('returns 200 with the EventHeatmapPayload shape', async () => {
+    const res = await SELF.fetch('http://test/api/event-heatmap?days=7');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { days: number; buckets: unknown[] };
+    expect(body.days).toBe(7);
+    expect(Array.isArray(body.buckets)).toBe(true);
+  });
+
+  it('rejects bad days param with 400', async () => {
+    const res = await SELF.fetch('http://test/api/event-heatmap?days=foo');
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /api/sparklines', () => {
+  it('returns the SparklinesPayload shape with default days=30', async () => {
+    const res = await SELF.fetch('http://test/api/sparklines');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      days: number;
+      error_rate: number[];
+      returning_users: number[];
+      faithful_users: number[];
+      curious_users: number[];
+      chat_p95: number[];
+    };
+    expect(body.days).toBe(30);
+    expect(body.error_rate.length).toBe(30);
+    expect(body.returning_users.length).toBe(30);
+    expect(body.faithful_users.length).toBe(30);
+    expect(body.curious_users.length).toBe(30);
+    expect(body.chat_p95.length).toBe(30);
+  });
+
+  it('accepts custom days param', async () => {
+    const res = await SELF.fetch('http://test/api/sparklines?days=7');
+    const body = (await res.json()) as { days: number; error_rate: number[] };
+    expect(body.days).toBe(7);
+    expect(body.error_rate.length).toBe(7);
+  });
+
+  it('rejects bad days param with 400', async () => {
+    const res = await SELF.fetch('http://test/api/sparklines?days=999');
+    expect(res.status).toBe(400);
   });
 });

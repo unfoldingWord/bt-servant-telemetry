@@ -1,7 +1,9 @@
 import type {
+  EventHeatmapPayload,
   HealthSnapshot,
   HealthStatus,
   MetricsSnapshot,
+  SparklinesPayload,
   TrendMetric,
   TrendPoint,
   TrendSeries,
@@ -135,9 +137,10 @@ async function countDistinctUsers30d(db: D1Database, nowMs: number): Promise<num
   return row?.n ?? 0;
 }
 
-async function countReturningUsers(db: D1Database): Promise<number> {
+async function countUsersAtLeastNDays(db: D1Database, minDays: number): Promise<number> {
   const row = await db
-    .prepare(`SELECT COUNT(*) AS n FROM users WHERE days_active_count >= 2`)
+    .prepare(`SELECT COUNT(*) AS n FROM users WHERE days_active_count >= ?`)
+    .bind(minDays)
     .first<{ n: number }>();
   return row?.n ?? 0;
 }
@@ -199,21 +202,26 @@ export async function querySnapshot(
   nowMs: number
 ): Promise<MetricsSnapshot> {
   const epoch = epochMs(envEpochIso);
-  const [allTime, fixed, d30, returning, logins, latency, errPct, rejectPct] = await Promise.all([
-    countAllTimeUsers(db),
-    countUsersSinceEpoch(db, epoch),
-    countDistinctUsers30d(db, nowMs),
-    countReturningUsers(db),
-    countLogins(db),
-    chatLatencyPercentiles(db, nowMs),
-    errorRate1hPct(db, nowMs),
-    chatBusyRejectRate1hPct(db, nowMs),
-  ]);
+  const [allTime, fixed, d30, returning, curious, faithful, logins, latency, errPct, rejectPct] =
+    await Promise.all([
+      countAllTimeUsers(db),
+      countUsersSinceEpoch(db, epoch),
+      countDistinctUsers30d(db, nowMs),
+      countUsersAtLeastNDays(db, 2),
+      countUsersAtLeastNDays(db, 5),
+      countUsersAtLeastNDays(db, 10),
+      countLogins(db),
+      chatLatencyPercentiles(db, nowMs),
+      errorRate1hPct(db, nowMs),
+      chatBusyRejectRate1hPct(db, nowMs),
+    ]);
   return {
     distinct_users_all_time: allTime,
     distinct_users_30d: d30,
     distinct_users_fixed_epoch: fixed,
     returning_users: returning,
+    curious_users: curious,
+    faithful_users: faithful,
     login_count: logins,
     chat_total_ms_p50: latency.p50,
     chat_total_ms_p95: latency.p95,
@@ -312,4 +320,70 @@ export async function queryTrend(
     .reverse()
     .map((day) => ({ day, value: buckets.has(day) ? (buckets.get(day) as number) : null }));
   return { metric, days, points };
+}
+
+// ===========================================
+// SPARKLINES — batch payload for KPI tiles
+// ===========================================
+
+function fillSeries(buckets: Map<number, number>, dayKeys: number[]): number[] {
+  return dayKeys.map((d) => buckets.get(d) ?? 0);
+}
+
+export async function querySparklines(
+  db: D1Database,
+  days: number,
+  nowMs: number
+): Promise<SparklinesPayload> {
+  const sinceMs = nowMs - days * ONE_DAY_MS;
+  const dayKeys = dayKeyRangeDescending(nowMs, days).reverse();
+  const [errorRate, distinctUsers, p95] = await Promise.all([
+    trendErrorRateByDay(db, sinceMs),
+    trendDistinctUsersByDay(db, sinceMs),
+    trendP95LatencyByDay(db, sinceMs),
+  ]);
+  // returning/faithful/curious user tiles all share the same sparkline
+  // shape: distinct (user_hash, org) per day. The headline number tells
+  // you the cohort size; the sparkline tells you whether activity is
+  // rising or falling. The cohorts differ in the threshold for the
+  // headline, not in the daily activity signal.
+  const dailyActivity = fillSeries(distinctUsers, dayKeys);
+  return {
+    days,
+    error_rate: fillSeries(errorRate, dayKeys),
+    returning_users: dailyActivity,
+    faithful_users: dailyActivity,
+    curious_users: dailyActivity,
+    chat_p95: fillSeries(p95, dayKeys),
+  };
+}
+
+// ===========================================
+// EVENT HEATMAP — (day-of-week × hour) rhythm
+// ===========================================
+
+/**
+ * Sums event volume into 168 (dow × hour) buckets over the lookback
+ * window. SQLite's strftime returns dow 0..6 (Sunday..Saturday) and
+ * hour 0..23. Cells without events are simply absent from the payload.
+ */
+export async function queryEventHeatmap(
+  db: D1Database,
+  days: number,
+  nowMs: number
+): Promise<EventHeatmapPayload> {
+  const sinceMs = nowMs - days * ONE_DAY_MS;
+  const { results } = await db
+    .prepare(
+      `SELECT
+         CAST(strftime('%w', ts / 1000, 'unixepoch') AS INTEGER) AS dow,
+         CAST(strftime('%H', ts / 1000, 'unixepoch') AS INTEGER) AS hour,
+         COUNT(*) AS count
+       FROM events
+       WHERE ts >= ?
+       GROUP BY dow, hour`
+    )
+    .bind(sinceMs)
+    .all<{ dow: number; hour: number; count: number }>();
+  return { days, buckets: results };
 }

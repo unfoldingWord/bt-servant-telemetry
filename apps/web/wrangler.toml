@@ -2,6 +2,20 @@ name = "bt-servant-telemetry"
 main = "src/index.ts"
 compatibility_date = "2026-04-01"
 
+# Static dashboard built by SvelteKit (adapter-static) at apps/web/build/.
+# Bound as ASSETS so the worker can fall through unknown routes to the
+# prerendered SPA. SvelteKit's fallback: 'index.html' enables client-side
+# routing without prerender entries.
+[assets]
+directory = "./build"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+# Worker runs first so /api/* and /health hit Hono, /tail hits the tail
+# handler, and only unhandled paths fall through to env.ASSETS.fetch()
+# from index.ts. Without this, the assets layer intercepts ALL requests
+# and returns 405 for non-GET methods regardless of worker routes.
+run_worker_first = true
+
 [observability]
 enabled = true
 head_sampling_rate = 1
