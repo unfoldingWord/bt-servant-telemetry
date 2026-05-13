@@ -2,12 +2,19 @@ import { Hono } from 'hono';
 import { VERSION } from './config/version.js';
 import { tailHandler } from './tail/index.js';
 import { apiRoutes } from './api/routes.js';
+import { scheduledHandler } from './scheduled/index.js';
 
 type Env = {
   ENVIRONMENT: string;
   TELEMETRY_EPOCH: string;
   PII_HASH_SALT: string;
   DB: D1Database;
+  // Scheduled-handler config: reconciliation backfill calls the Workers
+  // Observability Telemetry API. CF_API_TOKEN is a per-env secret; the
+  // other two come from [vars] in wrangler.toml.
+  CF_API_TOKEN: string;
+  CF_ACCOUNT_ID: string;
+  SOURCE_WORKER_NAME: string;
   // SvelteKit static dashboard, served via Workers static assets binding.
   // Optional so vitest-pool-workers integration tests (which don't ship
   // the dashboard build) still run.
@@ -46,6 +53,7 @@ app.on(['GET', 'HEAD'], '*', (c) => {
 const handler: ExportedHandler<Env> = {
   fetch: app.fetch,
   tail: tailHandler,
+  scheduled: scheduledHandler,
 };
 
 export default handler;
