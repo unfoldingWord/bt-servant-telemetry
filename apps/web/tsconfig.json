@@ -4,5 +4,5 @@
     "types": ["@cloudflare/workers-types", "node"]
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", ".wrangler", ".svelte-kit"]
+  "exclude": ["node_modules", "dist", "build", ".wrangler", ".svelte-kit", "src/sveltekit"]
 }

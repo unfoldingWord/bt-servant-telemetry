@@ -1,0 +1,109 @@
+@import 'tailwindcss';
+
+/* ============================================================
+   bt-servant-telemetry · "Bloomberg terminal meets split-flap"
+   Dark default. One bright accent. Restrained greys.
+   Mono numerics everywhere a number lives.
+   ============================================================ */
+
+@theme {
+  /* Typography */
+  --font-sans:
+    'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono:
+    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    monospace;
+
+  /* Surfaces — near-black with two elevations.
+     bg is the page; bg-card is for KPI / chart containers;
+     bg-elev sits one notch brighter for hover / active. */
+  --color-bg: oklch(0.16 0.005 250);
+  --color-bg-card: oklch(0.205 0.007 250);
+  --color-bg-elev: oklch(0.245 0.008 250);
+
+  /* Foreground — high-contrast for the hero, dimmed for chrome */
+  --color-fg: oklch(0.97 0 0);
+  --color-fg-muted: oklch(0.72 0 0);
+  --color-fg-subtle: oklch(0.52 0 0);
+
+  /* Borders — barely-there hairlines */
+  --color-border: oklch(0.28 0.004 250);
+  --color-border-strong: oklch(0.38 0.005 250);
+
+  /* Accent — single electric green. Used on the hero counter, the
+     live status pulse, the primary trend-line stroke. Use sparingly:
+     anywhere it appears, the eye should land. */
+  --color-accent: oklch(0.82 0.21 142);
+  --color-accent-dim: oklch(0.5 0.13 142);
+
+  /* Status palette — muted, not traffic-light primary.
+     up = subtle green, degraded = restrained amber, down = restrained red. */
+  --color-status-up: oklch(0.78 0.16 145);
+  --color-status-degraded: oklch(0.78 0.14 75);
+  --color-status-down: oklch(0.65 0.2 25);
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+@layer base {
+  html {
+    color-scheme: dark;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-bg text-fg;
+    font-family: var(--font-sans);
+    font-feature-settings:
+      'cv11' on,
+      'ss01' on;
+  }
+
+  /* Tabular nums everywhere a number lives — no jitter on flips */
+  .tabular,
+  [data-tabular] {
+    font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono);
+  }
+
+  /* Subtle scrollbar that matches the surface */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--color-bg);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border-strong);
+    border-radius: 999px;
+    border: 2px solid var(--color-bg);
+  }
+}
+
+/* ============================================================
+   Custom utilities
+   ============================================================ */
+
+/* Status pulse — a slow soft breath on the up indicator only.
+   Degraded holds; down holds. Pulse must never be aggressive. */
+@utility status-pulse {
+  animation: status-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Hairline horizontal rule — used between sections, never as a card border */
+@utility hairline {
+  border-top: 1px solid var(--color-border);
+}
