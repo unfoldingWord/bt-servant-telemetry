@@ -1,6 +1,5 @@
 import type {
   EventHeatmapPayload,
-  HealthSnapshot,
   MetricsSnapshot,
   SparklinesPayload,
   TrendMetric,
@@ -25,10 +24,6 @@ async function getJson<T>(path: string): Promise<T> {
 
 export function fetchSnapshot(): Promise<MetricsSnapshot> {
   return getJson<MetricsSnapshot>('/api/snapshot');
-}
-
-export function fetchHealth(): Promise<HealthSnapshot> {
-  return getJson<HealthSnapshot>('/api/health');
 }
 
 export function fetchTrend(metric: TrendMetric, days = 30): Promise<TrendSeries> {

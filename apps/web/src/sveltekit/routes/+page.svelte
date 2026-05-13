@@ -2,22 +2,14 @@
   import { onDestroy, onMount } from 'svelte';
   import type {
     EventHeatmapPayload,
-    HealthSnapshot,
     MetricsSnapshot,
     SparklinesPayload,
     TrendSeries,
   } from '@bt-servant-telemetry/shared';
-  import {
-    fetchEventHeatmap,
-    fetchHealth,
-    fetchSnapshot,
-    fetchSparklines,
-    fetchTrend,
-  } from '$lib/api';
+  import { fetchEventHeatmap, fetchSnapshot, fetchSparklines, fetchTrend } from '$lib/api';
   import { createPoller, type Poller } from '$lib/poll';
   import ActivityHeatmap from '$lib/components/ActivityHeatmap.svelte';
   import FlipCounter from '$lib/components/FlipCounter.svelte';
-  import HealthPill from '$lib/components/HealthPill.svelte';
   import KpiTile from '$lib/components/KpiTile.svelte';
   import LatencyTile from '$lib/components/LatencyTile.svelte';
   import TrendChart from '$lib/components/TrendChart.svelte';
@@ -36,17 +28,15 @@
   let trendErrorRate = $state<TrendSeries | null>(null);
   let trendP95 = $state<TrendSeries | null>(null);
   let eventHeatmap = $state<EventHeatmapPayload | null>(null);
-  let health = $state<HealthSnapshot | null>(null);
   let window = $state<Window>('all_time');
   let loadError = $state<string | null>(null);
 
   // Polling cadences per data class. Picked to match how fast each
-  // signal actually moves in production: health is the live pulse
-  // (15s), snapshot drives the flip counter and KPI numbers (30s),
-  // sparklines and trends are daily aggregates that barely move at
-  // sub-minute scale (60s / 5min). All pollers are visibility-aware
-  // via createPoller — they stop while the tab is hidden.
-  const POLL_HEALTH_MS = 15_000;
+  // signal actually moves: snapshot drives the flip counter and KPI
+  // numbers (30s), sparklines and trends are daily aggregates that
+  // barely move at sub-minute scale (60s / 5min). All pollers are
+  // visibility-aware via createPoller — they stop while the tab is
+  // hidden.
   const POLL_SNAPSHOT_MS = 30_000;
   const POLL_SPARKLINES_MS = 60_000;
   const POLL_TRENDS_MS = 5 * 60_000;
@@ -65,15 +55,6 @@
   // hero is a single component and re-init is imperceptible at this scale.
   function heroDigits(value: number): number {
     return Math.max(3, String(Math.max(0, Math.floor(value))).length);
-  }
-
-  async function refreshHealth(): Promise<void> {
-    try {
-      health = await fetchHealth();
-    } catch {
-      // Health stays last-known; the pill's relative-time will continue
-      // to age, which is the right "did we lose the signal?" cue.
-    }
   }
 
   async function refreshSnapshot(): Promise<void> {
@@ -111,14 +92,8 @@
   onMount(async () => {
     // Initial parallel fetch so first paint has data ASAP. Pollers
     // start ticking AFTER the first round so we don't double-fire.
-    await Promise.allSettled([
-      refreshHealth(),
-      refreshSnapshot(),
-      refreshSparklines(),
-      refreshTrendsAndHeatmap(),
-    ]);
+    await Promise.allSettled([refreshSnapshot(), refreshSparklines(), refreshTrendsAndHeatmap()]);
     pollers.push(
-      createPoller(refreshHealth, POLL_HEALTH_MS),
       createPoller(refreshSnapshot, POLL_SNAPSHOT_MS),
       createPoller(refreshSparklines, POLL_SPARKLINES_MS),
       createPoller(refreshTrendsAndHeatmap, POLL_TRENDS_MS)
@@ -136,7 +111,10 @@
       <span class="text-fg text-sm font-semibold tracking-wide uppercase">bt-servant</span>
       <span class="text-fg-subtle text-xs tracking-widest uppercase">telemetry</span>
     </div>
-    <HealthPill {health} />
+    <!-- Health pill removed: see follow-up issue. The previous logic conflated
+         "logs in the last 5 min" with "the worker is healthy," which produced
+         a misleading 'down' at every quiet moment. Re-add once we have a real
+         liveness signal. -->
   </header>
 
   <!-- Hero stack: vertical rhythm declared as a single flex column with
