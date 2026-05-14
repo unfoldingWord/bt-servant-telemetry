@@ -27,12 +27,20 @@ async function insertEvent(row: {
   event: string;
   ts: number;
   level?: string | null;
+  user_hash?: string | null;
 }): Promise<void> {
   await env.DB.prepare(
-    `INSERT INTO events (request_id, event, ts, level, org)
-     VALUES (?, ?, ?, ?, ?)`
+    `INSERT INTO events (request_id, event, ts, level, org, user_hash)
+     VALUES (?, ?, ?, ?, ?, ?)`
   )
-    .bind(row.request_id, row.event, row.ts, row.level ?? null, 'org-a')
+    .bind(
+      row.request_id,
+      row.event,
+      row.ts,
+      row.level ?? null,
+      'org-a',
+      'user_hash' in row ? row.user_hash : 'a'.repeat(64)
+    )
     .run();
 }
 
@@ -125,6 +133,36 @@ describe('runAlertSweep', () => {
     const { intents } = await runAlertSweep(env.DB, NOW);
     expect(intents).toEqual([]);
     expect(await postedAlertKinds()).toEqual(['worker_offline']);
+  });
+
+  it('does not count user-less errors toward error_rate_high', async () => {
+    // 49 healthy user events + 1 user error = 2% exactly (not firing).
+    // Add 10 user-less errors — if counted, rate would be 11/60 = 18%.
+    for (let i = 0; i < 49; i++) {
+      await insertEvent({
+        request_id: `h${i}`,
+        event: 'request_received',
+        ts: NOW - 8 * ONE_MIN_MS + i,
+      });
+    }
+    await insertEvent({
+      request_id: 'e1',
+      event: 'mcp_tool_call_error',
+      ts: NOW - ONE_MIN_MS,
+      level: 'error',
+    });
+    for (let i = 0; i < 10; i++) {
+      await insertEvent({
+        request_id: `ghost${i}`,
+        event: 'request_error',
+        ts: NOW - 2 * ONE_MIN_MS,
+        level: 'error',
+        user_hash: null,
+      });
+    }
+    const { intents, conditions } = await runAlertSweep(env.DB, NOW);
+    expect(conditions.find((c) => c.kind === 'error_rate_high')?.firing).toBe(false);
+    expect(intents).toEqual([]);
   });
 
   it('suppresses error_rate_high when worker_offline is also firing', async () => {

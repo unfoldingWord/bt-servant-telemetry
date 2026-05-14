@@ -46,8 +46,7 @@ migrations_dir = "migrations"
 # --- Dev: PR preview deploys ---
 [env.dev]
 name = "bt-servant-telemetry-dev"
-# routes will be set up once a custom domain exists
-# routes = [{ pattern = "dev-telemetry.<domain>", custom_domain = true }]
+routes = [{ pattern = "staging-telemetry.btservant.ai", custom_domain = true }]
 
 [env.dev.vars]
 ENVIRONMENT = "dev"
@@ -72,7 +71,7 @@ migrations_dir = "migrations"
 # --- Production: manual deploy only ---
 [env.production]
 name = "bt-servant-telemetry-production"
-# routes = [{ pattern = "telemetry.<domain>", custom_domain = true }]
+routes = [{ pattern = "telemetry.btservant.ai", custom_domain = true }]
 
 [env.production.vars]
 ENVIRONMENT = "production"

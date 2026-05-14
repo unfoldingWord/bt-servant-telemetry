@@ -294,6 +294,6 @@
   </section>
 
   <p class="text-fg-subtle mt-16 text-center text-[0.65rem] tracking-widest uppercase">
-    BT-Servant Telemetry v{VERSION}
+    BT-Servant Telemetry <span class="normal-case">v{VERSION}</span>
   </p>
 </div>

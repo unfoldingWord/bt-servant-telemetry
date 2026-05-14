@@ -57,7 +57,7 @@ async function evaluate(db: D1Database, nowMs: number): Promise<AlertCondition[]
       .prepare(
         `SELECT COUNT(*) AS total,
                 SUM(CASE WHEN level = 'error' THEN 1 ELSE 0 END) AS errors
-           FROM events WHERE ts >= ?`
+           FROM events WHERE ts >= ? AND user_hash IS NOT NULL AND org IS NOT NULL`
       )
       .bind(since10m)
       .first<{ total: number; errors: number | null }>(),
