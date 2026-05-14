@@ -6,7 +6,6 @@ import {
   querySnapshot,
   querySparklines,
   queryTrend,
-  epochMs,
 } from '../../src/api/queries.js';
 
 declare module 'cloudflare:test' {
@@ -26,8 +25,7 @@ beforeEach(async () => {
   await env.DB.exec('DELETE FROM user_active_days');
 });
 
-const EPOCH_ISO = '2026-04-24';
-const EPOCH_MS = epochMs(EPOCH_ISO);
+const EPOCH_MS = Date.UTC(2026, 3, 24); // 2026-04-24 UTC
 const NOW = Date.UTC(2026, 4, 12, 12, 0, 0); // 2026-05-12 12:00 UTC
 
 async function insertEvent(row: {
@@ -132,10 +130,9 @@ describe('queryHealth', () => {
 
 describe('querySnapshot', () => {
   it('returns zeroed snapshot when DB is empty', async () => {
-    const snap = await querySnapshot(env.DB, EPOCH_ISO, NOW);
+    const snap = await querySnapshot(env.DB, NOW);
     expect(snap.distinct_users_all_time).toBe(0);
     expect(snap.distinct_users_30d).toBe(0);
-    expect(snap.distinct_users_fixed_epoch).toBe(0);
     expect(snap.returning_users).toBe(0);
     expect(snap.curious_users).toBe(0);
     expect(snap.faithful_users).toBe(0);
@@ -144,7 +141,6 @@ describe('querySnapshot', () => {
     expect(snap.chat_total_ms_p95).toBeNull();
     expect(snap.error_rate_1h_pct).toBe(0);
     expect(snap.chat_busy_reject_rate_1h_pct).toBe(0);
-    expect(snap.epoch_iso).toBe(EPOCH_ISO);
     expect(snap.generated_at_ts).toBe(NOW);
   });
 
@@ -166,34 +162,16 @@ describe('querySnapshot', () => {
         org: `org-${spec.char}`,
       });
     }
-    const snap = await querySnapshot(env.DB, EPOCH_ISO, NOW);
+    const snap = await querySnapshot(env.DB, NOW);
     expect(snap.returning_users).toBe(4);
     expect(snap.curious_users).toBe(3);
     expect(snap.faithful_users).toBe(2);
   });
 
-  it('distinct_users_fixed_epoch excludes users with first_seen_ts before epoch', async () => {
-    await insertUser({ user_hash: 'a'.repeat(64), first_seen_ts: EPOCH_MS - 1 });
-    await insertUser({
-      user_hash: 'b'.repeat(64),
-      first_seen_ts: EPOCH_MS,
-      org: 'wordcollective',
-    });
-    await insertUser({
-      user_hash: 'c'.repeat(64),
-      first_seen_ts: EPOCH_MS + 86_400_000,
-      org: 'unfoldingWord',
-      client_id: 'whatsapp',
-    });
-    const snap = await querySnapshot(env.DB, EPOCH_ISO, NOW);
-    expect(snap.distinct_users_all_time).toBe(3);
-    expect(snap.distinct_users_fixed_epoch).toBe(2);
-  });
-
   it('distinct_users_30d counts (user_hash, org) pairs - same hash in two orgs counts as 2', async () => {
     // Same user_hash, two different orgs — must count as 2 to match the
     // canonical user key used by users.PRIMARY KEY (user_hash, org) and the
-    // all-time / fixed-epoch counters. Regression guard: PR #3 review.
+    // all-time counter. Regression guard: PR #3 review.
     const sharedHash = 'a'.repeat(64);
     await insertEvent({
       request_id: 'r1',
@@ -209,7 +187,7 @@ describe('querySnapshot', () => {
       user_hash: sharedHash,
       org: 'wordcollective',
     });
-    const snap = await querySnapshot(env.DB, EPOCH_ISO, NOW);
+    const snap = await querySnapshot(env.DB, NOW);
     expect(snap.distinct_users_30d).toBe(2);
   });
 
@@ -235,7 +213,7 @@ describe('querySnapshot', () => {
       ts: NOW - 35 * 86_400_000,
       user_hash: 'c'.repeat(64),
     });
-    const snap = await querySnapshot(env.DB, EPOCH_ISO, NOW);
+    const snap = await querySnapshot(env.DB, NOW);
     expect(snap.distinct_users_30d).toBe(2);
   });
 
@@ -258,7 +236,7 @@ describe('querySnapshot', () => {
       org: 'unfoldingWord',
       client_id: 'whatsapp',
     });
-    const snap = await querySnapshot(env.DB, EPOCH_ISO, NOW);
+    const snap = await querySnapshot(env.DB, NOW);
     expect(snap.returning_users).toBe(2);
     expect(snap.curious_users).toBe(1);
     expect(snap.faithful_users).toBe(0);
@@ -267,7 +245,7 @@ describe('querySnapshot', () => {
   it('login_count equals total rows in user_active_days', async () => {
     await insertActiveDays('a'.repeat(64), 'unfoldingWord', [20260424, 20260425, 20260426]);
     await insertActiveDays('b'.repeat(64), 'wordcollective', [20260424, 20260425]);
-    const snap = await querySnapshot(env.DB, EPOCH_ISO, NOW);
+    const snap = await querySnapshot(env.DB, NOW);
     expect(snap.login_count).toBe(5);
   });
 
@@ -295,7 +273,7 @@ describe('querySnapshot', () => {
       ts: NOW - 60_000,
       total_ms: 999_999,
     });
-    const snap = await querySnapshot(env.DB, EPOCH_ISO, NOW);
+    const snap = await querySnapshot(env.DB, NOW);
     expect(snap.chat_total_ms_p50).toBe(550);
     expect(snap.chat_total_ms_p95).toBe(955);
   });
@@ -312,7 +290,7 @@ describe('querySnapshot', () => {
         ts: NOW - 30 * 60_000,
       });
     }
-    const snap = await querySnapshot(env.DB, EPOCH_ISO, NOW);
+    const snap = await querySnapshot(env.DB, NOW);
     expect(snap.error_rate_1h_pct).toBe(20);
   });
 
@@ -325,7 +303,7 @@ describe('querySnapshot', () => {
       event: 'chat_busy_final_reject',
       ts: NOW - 30 * 60_000,
     });
-    const snap = await querySnapshot(env.DB, EPOCH_ISO, NOW);
+    const snap = await querySnapshot(env.DB, NOW);
     expect(snap.chat_busy_reject_rate_1h_pct).toBe(25);
   });
 });
@@ -505,15 +483,5 @@ describe('queryEventHeatmap', () => {
     const mondayCell = payload.buckets.find((b) => b.dow === 1 && b.hour === 9);
     expect(sundayCell?.count).toBe(3);
     expect(mondayCell?.count).toBe(1);
-  });
-});
-
-describe('epochMs', () => {
-  it('parses YYYY-MM-DD as UTC midnight', () => {
-    expect(epochMs('2026-04-24')).toBe(Date.UTC(2026, 3, 24));
-  });
-
-  it('throws on invalid input', () => {
-    expect(() => epochMs('not-a-date')).toThrow();
   });
 });

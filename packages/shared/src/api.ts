@@ -20,7 +20,6 @@ export type MetricsSnapshot = {
   // Hero — distinct users
   distinct_users_all_time: number;
   distinct_users_30d: number;
-  distinct_users_fixed_epoch: number;
 
   // Secondary KPIs
   returning_users: number;
@@ -33,7 +32,6 @@ export type MetricsSnapshot = {
   chat_busy_reject_rate_1h_pct: number;
 
   // Provenance
-  epoch_iso: string;
   generated_at_ts: number;
 };
 

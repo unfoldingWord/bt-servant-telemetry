@@ -14,12 +14,11 @@
   import LatencyTile from '$lib/components/LatencyTile.svelte';
   import TrendChart from '$lib/components/TrendChart.svelte';
 
-  type Window = 'all_time' | 'd30' | 'fixed';
+  type Window = 'all_time' | 'd30';
 
   const WINDOW_LABELS: Record<Window, string> = {
     all_time: 'distinct users · all-time',
     d30: 'distinct users · last 30 days',
-    fixed: 'distinct users · since epoch',
   };
 
   let snapshot = $state<MetricsSnapshot | null>(null);
@@ -43,9 +42,8 @@
 
   function heroValue(snap: MetricsSnapshot | null, w: Window): number {
     if (!snap) return 0;
-    if (w === 'all_time') return snap.distinct_users_all_time;
     if (w === 'd30') return snap.distinct_users_30d;
-    return snap.distinct_users_fixed_epoch;
+    return snap.distinct_users_all_time;
   }
 
   // Start at 2 digits; only grow to 3, 4, ... as the value forces it.
@@ -161,17 +159,6 @@
         onclick={() => (window = 'd30')}
       >
         Last 30 days
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={window === 'fixed'}
-        class="rounded-full px-4 py-1.5 transition {window === 'fixed'
-          ? 'bg-bg-elev text-fg ring-accent/30 ring-1 ring-inset'
-          : 'text-fg-muted hover:text-fg'}"
-        onclick={() => (window = 'fixed')}
-      >
-        Fixed from epoch
       </button>
     </div>
 

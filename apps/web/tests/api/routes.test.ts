@@ -66,16 +66,15 @@ describe('GET /api/snapshot', () => {
     expect(body).toMatchObject({
       distinct_users_all_time: expect.any(Number),
       distinct_users_30d: expect.any(Number),
-      distinct_users_fixed_epoch: expect.any(Number),
       returning_users: expect.any(Number),
       curious_users: expect.any(Number),
       faithful_users: expect.any(Number),
       login_count: expect.any(Number),
       error_rate_1h_pct: expect.any(Number),
       chat_busy_reject_rate_1h_pct: expect.any(Number),
-      epoch_iso: '2026-04-24',
       generated_at_ts: expect.any(Number),
     });
+    expect(body).not.toHaveProperty('distinct_users_fixed_epoch');
     expect('chat_total_ms_p50' in body).toBe(true);
     expect('chat_total_ms_p95' in body).toBe(true);
   });

@@ -9,7 +9,6 @@ import {
 import type { TrendMetric } from '@bt-servant-telemetry/shared';
 
 type Env = {
-  TELEMETRY_EPOCH: string;
   DB: D1Database;
 };
 
@@ -43,7 +42,7 @@ apiRoutes.get('/health', async (c) => {
 });
 
 apiRoutes.get('/snapshot', async (c) => {
-  const snapshot = await querySnapshot(c.env.DB, c.env.TELEMETRY_EPOCH, Date.now());
+  const snapshot = await querySnapshot(c.env.DB, Date.now());
   return c.json(snapshot);
 });
 
