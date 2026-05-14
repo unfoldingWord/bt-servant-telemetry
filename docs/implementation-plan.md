@@ -65,7 +65,7 @@ Plus dedupe tables for Phase 6: `posted_alerts (alert_kind PK)` and `reached_mil
 
 The dashboard runs pre-shaped aggregate queries directly against D1. If latency becomes a problem, wrap the API response in the Workers Cache API at 30s TTL — do NOT reintroduce a KV snapshot (racy under concurrent tail invocations, stale propagation).
 
-**TELEMETRY_EPOCH** is a single config constant (default `2026-04-24`) representing the line in the sand. "All-time" on the dashboard = since this date.
+**TELEMETRY_EPOCH** is a single config constant (default `2026-04-24`) used by the backfill script to bound historical data recovery. "All-time" on the dashboard = every user ever recorded in D1, regardless of epoch.
 
 ## PII handling — non-negotiable
 
@@ -99,7 +99,7 @@ The current `bt-servant-worker` logs contain raw PII that must never reach our D
 
 Hero (flip counter, dominant center, user-toggleable window with **All-time as default**):
 
-- Distinct users — all-time (since epoch), rolling 30d, fixed (epoch-only, same number as all-time at launch but diverges if epoch changes)
+- Distinct users — all-time (every user in D1), rolling 30d
 
 Secondary KPIs (KpiBarChart cards):
 
@@ -124,7 +124,7 @@ Health strip (top bar):
 
 Use **@pqina/flip** (MIT, ~8kb) — the airport split-flap board. Wrap as a Svelte 5 component (`apps/web/src/sveltekit/src/lib/components/FlipCounter.svelte`). Number-flow was rejected as too subtle.
 
-Chrome around it mirrors ccai's `StatsOverview.svelte`: gradient card, trend delta badge below, three toggle pills ("All-time" default / "Last 30 days" / "Fixed from epoch").
+Chrome around it mirrors ccai's `StatsOverview.svelte`: gradient card, trend delta badge below, two toggle pills ("All-time" default / "Last 30 days").
 
 ## Dashboard stack (cloning ccai exactly where possible)
 
