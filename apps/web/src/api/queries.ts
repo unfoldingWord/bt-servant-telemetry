@@ -32,14 +32,6 @@ const DAY_KEY_SQL = `
   CAST(strftime('%d', ts / 1000, 'unixepoch') AS INTEGER)
 `;
 
-export function epochMs(envEpochIso: string): number {
-  const ms = Date.parse(`${envEpochIso}T00:00:00Z`);
-  if (Number.isNaN(ms)) {
-    throw new Error(`Invalid TELEMETRY_EPOCH: ${envEpochIso}`);
-  }
-  return ms;
-}
-
 function utcDayKey(ts: number): number {
   const d = new Date(ts);
   return d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate();
@@ -112,17 +104,9 @@ async function countAllTimeUsers(db: D1Database): Promise<number> {
   return row?.n ?? 0;
 }
 
-async function countUsersSinceEpoch(db: D1Database, epoch: number): Promise<number> {
-  const row = await db
-    .prepare(`SELECT COUNT(*) AS n FROM users WHERE first_seen_ts >= ?`)
-    .bind(epoch)
-    .first<{ n: number }>();
-  return row?.n ?? 0;
-}
-
 async function countDistinctUsers30d(db: D1Database, nowMs: number): Promise<number> {
   // Counts distinct (user_hash, org) pairs to match the canonical user key
-  // used by users.PRIMARY KEY and the all-time / fixed-epoch counters.
+  // used by users.PRIMARY KEY and the all-time counter.
   // COUNT(DISTINCT user_hash) alone would collapse a hash that appears in
   // two orgs, causing this counter to disagree with the hero.
   const row = await db
@@ -196,16 +180,10 @@ async function chatBusyRejectRate1hPct(db: D1Database, nowMs: number): Promise<n
   return safeRatePct(row?.rejects ?? 0, row?.attempts ?? 0);
 }
 
-export async function querySnapshot(
-  db: D1Database,
-  envEpochIso: string,
-  nowMs: number
-): Promise<MetricsSnapshot> {
-  const epoch = epochMs(envEpochIso);
-  const [allTime, fixed, d30, returning, curious, faithful, logins, latency, errPct, rejectPct] =
+export async function querySnapshot(db: D1Database, nowMs: number): Promise<MetricsSnapshot> {
+  const [allTime, d30, returning, curious, faithful, logins, latency, errPct, rejectPct] =
     await Promise.all([
       countAllTimeUsers(db),
-      countUsersSinceEpoch(db, epoch),
       countDistinctUsers30d(db, nowMs),
       countUsersAtLeastNDays(db, 2),
       countUsersAtLeastNDays(db, 5),
@@ -218,7 +196,6 @@ export async function querySnapshot(
   return {
     distinct_users_all_time: allTime,
     distinct_users_30d: d30,
-    distinct_users_fixed_epoch: fixed,
     returning_users: returning,
     curious_users: curious,
     faithful_users: faithful,
@@ -227,7 +204,6 @@ export async function querySnapshot(
     chat_total_ms_p95: latency.p95,
     error_rate_1h_pct: errPct,
     chat_busy_reject_rate_1h_pct: rejectPct,
-    epoch_iso: envEpochIso,
     generated_at_ts: nowMs,
   };
 }
