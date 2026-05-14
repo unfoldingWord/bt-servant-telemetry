@@ -49,7 +49,7 @@ async function insertEvent(row: {
       row.ts,
       row.level ?? null,
       row.org ?? 'unfoldingWord',
-      row.user_hash ?? 'a'.repeat(64),
+      'user_hash' in row ? row.user_hash : 'a'.repeat(64),
       row.client_id ?? 'web',
       row.total_ms ?? null
     )
@@ -294,6 +294,34 @@ describe('querySnapshot', () => {
     expect(snap.error_rate_1h_pct).toBe(20);
   });
 
+  it('error_rate_1h_pct excludes events without user_hash', async () => {
+    // 8 normal + 2 errors (with user_hash) = 20% error rate
+    for (let i = 0; i < 8; i++) {
+      await insertEvent({ request_id: `r${i}`, event: 'request_received', ts: NOW - 30 * 60_000 });
+    }
+    for (let i = 0; i < 2; i++) {
+      await insertEvent({
+        request_id: `e${i}`,
+        event: 'request_error',
+        level: 'error',
+        ts: NOW - 30 * 60_000,
+      });
+    }
+    // Add 10 user-less error events — these should NOT count
+    for (let i = 0; i < 10; i++) {
+      await insertEvent({
+        request_id: `ghost${i}`,
+        event: 'request_error',
+        level: 'error',
+        ts: NOW - 30 * 60_000,
+        user_hash: null,
+      });
+    }
+    const snap = await querySnapshot(env.DB, NOW);
+    // Should still be 20% (2/10), not 60% (12/20)
+    expect(snap.error_rate_1h_pct).toBe(20);
+  });
+
   it('chat_busy_reject_rate_1h_pct = rejects / request_received within 1h', async () => {
     for (let i = 0; i < 4; i++) {
       await insertEvent({ request_id: `r${i}`, event: 'request_received', ts: NOW - 30 * 60_000 });
@@ -380,6 +408,28 @@ describe('queryTrend', () => {
     await insertEvent({ request_id: 'e1', event: 'request_error', level: 'error', ts: dayA });
     const series = await queryTrend(env.DB, 'error_rate', 7, NOW);
     const byDay = new Map(series.points.map((p) => [p.day, p.value]));
+    expect(byDay.get(20260510)).toBe(10);
+  });
+
+  it('error_rate trend excludes events without user_hash', async () => {
+    const dayA = Date.UTC(2026, 4, 10, 12, 0, 0);
+    for (let i = 0; i < 9; i++) {
+      await insertEvent({ request_id: `r${i}`, event: 'request_received', ts: dayA });
+    }
+    await insertEvent({ request_id: 'e1', event: 'request_error', level: 'error', ts: dayA });
+    // Add user-less errors that should not be counted
+    for (let i = 0; i < 5; i++) {
+      await insertEvent({
+        request_id: `ghost${i}`,
+        event: 'request_error',
+        level: 'error',
+        ts: dayA,
+        user_hash: null,
+      });
+    }
+    const series = await queryTrend(env.DB, 'error_rate', 7, NOW);
+    const byDay = new Map(series.points.map((p) => [p.day, p.value]));
+    // Should be 10% (1/10), not 40% (6/15)
     expect(byDay.get(20260510)).toBe(10);
   });
 

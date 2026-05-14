@@ -159,7 +159,7 @@ async function errorRate1hPct(db: D1Database, nowMs: number): Promise<number> {
     .prepare(
       `SELECT COUNT(*) AS n,
               SUM(CASE WHEN level = 'error' THEN 1 ELSE 0 END) AS errors
-         FROM events WHERE ts >= ?`
+         FROM events WHERE ts >= ? AND user_hash IS NOT NULL`
     )
     .bind(since)
     .first<{ n: number; errors: number | null }>();
@@ -240,7 +240,7 @@ async function trendErrorRateByDay(db: D1Database, sinceMs: number): Promise<Map
       `SELECT ${DAY_KEY_SQL} AS day,
               COUNT(*) AS total,
               SUM(CASE WHEN level = 'error' THEN 1 ELSE 0 END) AS errors
-         FROM events WHERE ts >= ?
+         FROM events WHERE ts >= ? AND user_hash IS NOT NULL
          GROUP BY day`
     )
     .bind(sinceMs)
