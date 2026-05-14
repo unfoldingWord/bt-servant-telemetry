@@ -180,10 +180,10 @@ Secrets (set per env via `wrangler secret put`):
 **wrangler.toml** multi-env — mirror lasker's structure:
 
 - Top-level `name`, `main`, `compatibility_date`, top-level `[observability]` at 100%
-- `[env.dev]` (sampling 1.0) — routes to `dev-telemetry.<domain>`
-- `[env.staging]` (sampling 1.0) — routes to `staging-telemetry.<domain>`
-- `[env.production]` (sampling 0.1 — higher than lasker's 0.01 because telemetry's own error rate matters to us) — routes to `telemetry.<domain>`
+- `[env.dev]` (sampling 1.0) — consumes `bt-servant-worker-staging` upstream
+- `[env.production]` (sampling 0.1 — higher than lasker's 0.01 because telemetry's own error rate matters to us) — consumes `bt-servant-worker` (top-level) upstream
 - D1 bindings per env (separate databases)
+- Lasker's three-tier dev/staging/prod was dropped after Phase 8 — staging served no use case here (dev consumes the staging upstream worker; there's no third upstream to mirror). Re-add if/when a real use case emerges.
 
 **CI** — cloned from `../lasker-opening-service/.github/workflows/ci.yml`:
 
@@ -191,7 +191,7 @@ Secrets (set per env via `wrangler secret put`):
 - Version check: `apps/web/src/config/version.ts` must match `apps/web/package.json` version
 - Architecture job runs `pnpm run architecture` (dependency-cruiser)
 - Bundle-size step inside `build` (from bt-servant-web-client pattern) — top 10 largest files in `.svelte-kit/cloudflare/` written to `$GITHUB_STEP_SUMMARY`
-- Separate workflows: `deploy-dev.yml` (PR), `deploy-staging.yml` (push to main), `deploy-prod.yml` (manual)
+- Separate workflows: `deploy-dev.yml` (auto on push to `main` after CI green), `deploy-prod.yml` (manual via workflow_dispatch with CI-pass preflight)
 
 **Testing:** Vitest + `@cloudflare/vitest-pool-workers`. Integration tests assert:
 
@@ -210,7 +210,7 @@ Secrets (set per env via `wrangler secret put`):
 5. **Dashboard** — SvelteKit routes, copy ccai chart components, wire FlipCounter (@pqina/flip), connect to API.
 6. **Scheduled handlers** — digest, alert sweeper, milestone watcher, reconciliation backfill, debounce/dedupe tables.
 7. **Zulip integration** — formatters, secrets config, end-to-end test against a throwaway Zulip stream.
-8. **Prod deploy (out of scope for the tracked issue):** staging first with `tail_consumers` wired to bt-servant-worker staging; run bootstrap backfill; verify 24h of data and zero raw-PII rows in D1; then prod.
+8. **Prod deploy:** dev first with `tail_consumers` wired to bt-servant-worker staging; run bootstrap backfill; verify data and zero raw-PII rows in D1; then prod with `tail_consumers` wired to top-level bt-servant-worker. CI/CD: dev auto-deploys on merges to `main` (workflow_run gated on `event == 'push'`); prod is manual via workflow_dispatch with a CI-pass preflight.
 
 ## Verification
 
