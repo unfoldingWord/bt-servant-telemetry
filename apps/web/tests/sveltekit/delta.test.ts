@@ -63,23 +63,23 @@ describe('deltaQuality', () => {
   const down: DeltaSignal = { pctChange: -10, arrow: 'down' };
   const flat: DeltaSignal = { pctChange: 0, arrow: 'flat' };
 
-  it('maps up → good for higher_is_better', () => {
+  it('maps up to good for higher_is_better', () => {
     expect(deltaQuality(up, 'higher_is_better')).toBe('good');
   });
 
-  it('maps down → bad for higher_is_better', () => {
+  it('maps down to bad for higher_is_better', () => {
     expect(deltaQuality(down, 'higher_is_better')).toBe('bad');
   });
 
-  it('maps up → bad for lower_is_better', () => {
+  it('maps up to bad for lower_is_better', () => {
     expect(deltaQuality(up, 'lower_is_better')).toBe('bad');
   });
 
-  it('maps down → good for lower_is_better', () => {
+  it('maps down to good for lower_is_better', () => {
     expect(deltaQuality(down, 'lower_is_better')).toBe('good');
   });
 
-  it('maps flat → flat regardless of direction', () => {
+  it('maps flat to flat regardless of direction', () => {
     expect(deltaQuality(flat, 'higher_is_better')).toBe('flat');
     expect(deltaQuality(flat, 'lower_is_better')).toBe('flat');
   });
