@@ -45,7 +45,7 @@ async function insertEvent(row: {
       row.ts,
       row.level ?? null,
       row.org ?? 'org-a',
-      'user_hash' in row ? row.user_hash : 'a'.repeat(64),
+      row.user_hash ?? null,
       row.total_ms ?? null
     )
     .run();
