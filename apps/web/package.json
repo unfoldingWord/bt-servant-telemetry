@@ -10,6 +10,7 @@
     "seed": "wrangler dev src/scripts/seed-dev.ts --port 8788",
     "deploy": "wrangler deploy",
     "build": "svelte-kit sync && vite build && wrangler deploy --dry-run",
+    "build:assets": "svelte-kit sync && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "svelte-kit sync && tsc --noEmit && tsc --noEmit -p tsconfig.test.json && svelte-check --tsconfig ./tsconfig.sveltekit.json"
