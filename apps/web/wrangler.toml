@@ -69,30 +69,6 @@ database_name = "bt-servant-telemetry-dev"
 database_id = "032e0aea-103a-4349-ac9c-57a3b3bba1db"
 migrations_dir = "migrations"
 
-# --- Staging: main branch deploys ---
-[env.staging]
-name = "bt-servant-telemetry-staging"
-# routes = [{ pattern = "staging-telemetry.<domain>", custom_domain = true }]
-
-[env.staging.vars]
-ENVIRONMENT = "staging"
-TELEMETRY_EPOCH = "2026-04-24"
-CF_ACCOUNT_ID = "5a3ffd86280d3ed086be76d955829242"
-SOURCE_WORKER_NAME = "bt-servant-worker"
-
-[env.staging.observability]
-enabled = true
-head_sampling_rate = 1
-
-[env.staging.triggers]
-crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *"]
-
-[[env.staging.d1_databases]]
-binding = "DB"
-database_name = "bt-servant-telemetry-staging"
-database_id = "REPLACE_AFTER_WRANGLER_D1_CREATE_STAGING"
-migrations_dir = "migrations"
-
 # --- Production: manual deploy only ---
 [env.production]
 name = "bt-servant-telemetry-production"
