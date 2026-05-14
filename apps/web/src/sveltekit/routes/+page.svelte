@@ -7,6 +7,7 @@
     TrendSeries,
   } from '@bt-servant-telemetry/shared';
   import { fetchEventHeatmap, fetchSnapshot, fetchSparklines, fetchTrend } from '$lib/api';
+  import { VERSION } from '../../config/version';
   import { createPoller, type Poller } from '$lib/poll';
   import ActivityHeatmap from '$lib/components/ActivityHeatmap.svelte';
   import FlipCounter from '$lib/components/FlipCounter.svelte';
@@ -293,6 +294,6 @@
   </section>
 
   <p class="text-fg-subtle mt-16 text-center text-[0.65rem] tracking-widest uppercase">
-    phase 5 · charts + heatmap wired · health pill next
+    BT-Servant Telemetry v{VERSION}
   </p>
 </div>
