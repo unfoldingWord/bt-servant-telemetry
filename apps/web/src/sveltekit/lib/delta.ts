@@ -30,10 +30,7 @@ export function computeDelta(series: number[] | null | undefined): DeltaSignal |
   const tailAvg = avg(tail);
   const headAvg = avg(head);
 
-  if (headAvg === 0) {
-    if (tailAvg === 0) return { pctChange: 0, arrow: 'flat' };
-    return { pctChange: 100, arrow: 'up' };
-  }
+  if (headAvg === 0) return { pctChange: 0, arrow: 'flat' };
   const pctChange = ((tailAvg - headAvg) / headAvg) * 100;
   if (Math.abs(pctChange) < FLAT_THRESHOLD_PCT) {
     return { pctChange: 0, arrow: 'flat' };
