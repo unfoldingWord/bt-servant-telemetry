@@ -44,9 +44,11 @@ database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"
 
 # --- Dev: PR preview deploys ---
+# Custom domain (staging-telemetry.btservant.ai) is managed in the
+# Cloudflare dashboard, not declared here — see PR #25 follow-up. Keeping
+# it dashboard-side avoids needing Workers Routes:Edit on the deploy token.
 [env.dev]
 name = "bt-servant-telemetry-dev"
-routes = [{ pattern = "staging-telemetry.btservant.ai", custom_domain = true }]
 
 [env.dev.vars]
 ENVIRONMENT = "dev"
@@ -69,9 +71,10 @@ database_id = "032e0aea-103a-4349-ac9c-57a3b3bba1db"
 migrations_dir = "migrations"
 
 # --- Production: manual deploy only ---
+# Custom domain (telemetry.btservant.ai) is managed in the Cloudflare
+# dashboard, not declared here. Same reasoning as [env.dev] above.
 [env.production]
 name = "bt-servant-telemetry-production"
-routes = [{ pattern = "telemetry.btservant.ai", custom_domain = true }]
 
 [env.production.vars]
 ENVIRONMENT = "production"
