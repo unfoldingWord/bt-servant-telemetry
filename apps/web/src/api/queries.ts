@@ -154,6 +154,14 @@ async function chatLatencyPercentiles(
 }
 
 async function errorRate1hPct(db: D1Database, nowMs: number): Promise<number> {
+  // Counts ALL events, including user-less ones. Upstream bt-servant-worker
+  // emits most error events without client_id/user_id, so filtering on
+  // (user_hash, org) — the canonical user key — would zero out real error
+  // signal (see PRs #24, #25). This intentionally differs in population
+  // from trendDistinctUsersByDay; the trend chart can therefore show a
+  // non-zero error rate on a day with 0 distinct users when the only
+  // events that day were unattributed system errors. Tracked separately
+  // is the right long-term fix.
   const since = nowMs - ONE_HOUR_MS;
   const row = await db
     .prepare(
@@ -235,6 +243,11 @@ async function trendDistinctUsersByDay(
 }
 
 async function trendErrorRateByDay(db: D1Database, sinceMs: number): Promise<Map<number, number>> {
+  // Same population caveat as errorRate1hPct: counts every event (including
+  // events lacking (user_hash, org)) so unattributed system errors stay
+  // visible. Pairing this series with trendDistinctUsersByDay in the UI
+  // can produce a "0 users / non-zero error rate" day — that is the
+  // upstream data shape, not a bug in this query.
   const { results } = await db
     .prepare(
       `SELECT ${DAY_KEY_SQL} AS day,
