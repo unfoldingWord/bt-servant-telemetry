@@ -31,7 +31,7 @@
     "@sveltejs/vite-plugin-svelte": "^5.0.4",
     "@tailwindcss/vite": "^4.1.18",
     "mode-watcher": "^1.1.0",
-    "svelte": "^5.2.9",
+    "svelte": "^5.55.7",
     "svelte-check": "^4.1.1",
     "tailwindcss": "^4.1.18",
     "typescript": "^5.9.3",
