@@ -34,11 +34,11 @@
        between them. The spread reads as the latency distribution
        footprint without needing a full histogram. -->
   <div class="flex items-baseline gap-3">
-    <span class="text-fg-muted tabular text-lg font-light leading-none">
+    <span class="text-fg-muted tabular whitespace-nowrap text-lg font-light leading-none">
       {formatMetric(p50, 'duration_ms')}
     </span>
     {#if spreadPct !== null}
-      <span class="relative flex-1">
+      <span class="relative min-w-0 flex-1">
         <span class="bg-border block h-px w-full"></span>
         <span
           class="bg-fg-muted absolute top-1/2 left-0 block h-px -translate-y-1/2"
@@ -46,7 +46,7 @@
         ></span>
       </span>
     {/if}
-    <span class="text-fg tabular text-2xl font-light leading-none">
+    <span class="text-fg tabular whitespace-nowrap text-2xl font-light leading-none">
       {formatMetric(p95, 'duration_ms')}
     </span>
     <DeltaBadge series={sparkline} direction="lower_is_better" />
