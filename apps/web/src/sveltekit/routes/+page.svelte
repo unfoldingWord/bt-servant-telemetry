@@ -47,13 +47,13 @@
     return snap.distinct_users_all_time;
   }
 
-  // Start at 2 digits; only grow to 3, 4, ... as the value forces it.
+  // Start at 4 digits; only grow to 5, 6, ... as the value forces it.
   // The library doesn't dynamically extend the panel set on value-only
   // changes, so the parent re-keys the FlipCounter when digit width
   // changes (see the {#key} in the template). Re-keying is cheap — the
   // hero is a single component and re-init is imperceptible at this scale.
   function heroDigits(value: number): number {
-    return Math.max(3, String(Math.max(0, Math.floor(value))).length);
+    return Math.max(4, String(Math.max(0, Math.floor(value))).length);
   }
 
   async function refreshSnapshot(): Promise<void> {
