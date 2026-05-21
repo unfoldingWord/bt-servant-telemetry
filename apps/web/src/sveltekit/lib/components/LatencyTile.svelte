@@ -23,11 +23,14 @@
 </script>
 
 <div class="border-border bg-bg-card flex flex-col gap-3 rounded-2xl border p-5">
-  <div class="flex items-baseline justify-between">
+  <div class="flex items-center justify-between gap-2">
     <p class="text-fg-subtle text-[0.65rem] tracking-widest uppercase">{label}</p>
-    {#if caption}
-      <p class="text-fg-subtle/70 text-[0.6rem] tracking-wider lowercase">{caption}</p>
-    {/if}
+    <div class="flex items-center gap-2">
+      {#if caption}
+        <p class="text-fg-subtle/70 text-[0.6rem] tracking-wider lowercase">{caption}</p>
+      {/if}
+      <DeltaBadge series={sparkline} direction="lower_is_better" />
+    </div>
   </div>
 
   <!-- Dual-value row: p50 (muted) and p95 (bright) with a thin spread bar
@@ -49,7 +52,6 @@
     <span class="text-fg tabular whitespace-nowrap text-2xl font-light leading-none">
       {formatMetric(p95, 'duration_ms')}
     </span>
-    <DeltaBadge series={sparkline} direction="lower_is_better" />
   </div>
 
   <div
