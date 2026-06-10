@@ -1,6 +1,6 @@
 {
   "name": "@bt-servant-telemetry/web",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "type": "module",
   "scripts": {
@@ -19,7 +19,7 @@
     "@bt-servant-telemetry/shared": "workspace:*",
     "@pqina/flip": "^1.6.4",
     "echarts": "^5.6.0",
-    "hono": "^4.12.18",
+    "hono": "^4.12.25",
     "svelte-echarts": "^1.0.0",
     "zod": "^3.25.76"
   },

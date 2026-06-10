@@ -77,6 +77,7 @@ describe('GET /api/snapshot', () => {
     expect(body).not.toHaveProperty('distinct_users_fixed_epoch');
     expect('chat_total_ms_p50' in body).toBe(true);
     expect('chat_total_ms_p95' in body).toBe(true);
+    expect(body).toMatchObject({ chat_latency_n: expect.any(Number) });
   });
 });
 

@@ -276,6 +276,7 @@ describe('querySnapshot', () => {
     const snap = await querySnapshot(env.DB, NOW);
     expect(snap.chat_total_ms_p50).toBe(550);
     expect(snap.chat_total_ms_p95).toBe(955);
+    expect(snap.chat_latency_n).toBe(10);
   });
 
   it('error_rate_1h_pct = errors / total within trailing hour', async () => {
