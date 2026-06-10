@@ -235,6 +235,7 @@
       label="chat latency"
       p50={snapshot?.chat_total_ms_p50 ?? null}
       p95={snapshot?.chat_total_ms_p95 ?? null}
+      n={snapshot?.chat_latency_n ?? 0}
       sparkline={sparklines?.chat_p95 ?? null}
       caption="trailing 1h"
     />

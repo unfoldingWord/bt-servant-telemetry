@@ -1,17 +1,17 @@
 <script lang="ts">
   import Sparkline from './Sparkline.svelte';
-  import DeltaBadge from './DeltaBadge.svelte';
   import { formatMetric } from '$lib/format';
 
   type Props = {
     label: string;
     p50: number | null;
     p95: number | null;
+    n: number;
     sparkline?: number[] | null;
     caption?: string | null;
   };
 
-  let { label, p50, p95, sparkline, caption }: Props = $props();
+  let { label, p50, p95, n, sparkline, caption }: Props = $props();
 
   // Spread bar: visualizes p95 relative to p50 as a thin horizontal bar.
   // The bar's filled segment goes from 0% to (p50/p95) of width; the open
@@ -29,7 +29,7 @@
       {#if caption}
         <p class="text-fg-subtle/70 text-[0.6rem] tracking-wider lowercase">{caption}</p>
       {/if}
-      <DeltaBadge series={sparkline} direction="lower_is_better" />
+      <p class="text-fg-subtle/70 tabular text-[0.6rem] tracking-wider lowercase">n={n}</p>
     </div>
   </div>
 

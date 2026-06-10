@@ -28,6 +28,7 @@ export type MetricsSnapshot = {
   login_count: number;
   chat_total_ms_p50: number | null;
   chat_total_ms_p95: number | null;
+  chat_latency_n: number;
   error_rate_1h_pct: number;
   chat_busy_reject_rate_1h_pct: number;
 

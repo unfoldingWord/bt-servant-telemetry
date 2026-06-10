@@ -137,7 +137,7 @@ async function countLogins(db: D1Database): Promise<number> {
 async function chatLatencyPercentiles(
   db: D1Database,
   nowMs: number
-): Promise<{ p50: number | null; p95: number | null }> {
+): Promise<{ p50: number | null; p95: number | null; n: number }> {
   const since = nowMs - ONE_HOUR_MS;
   const { results } = await db
     .prepare(
@@ -150,7 +150,7 @@ async function chatLatencyPercentiles(
     .bind(since)
     .all<{ total_ms: number }>();
   const vals = results.map((r) => r.total_ms);
-  return { p50: percentile(vals, 50), p95: percentile(vals, 95) };
+  return { p50: percentile(vals, 50), p95: percentile(vals, 95), n: vals.length };
 }
 
 async function errorRate1hPct(db: D1Database, nowMs: number): Promise<number> {
@@ -210,6 +210,7 @@ export async function querySnapshot(db: D1Database, nowMs: number): Promise<Metr
     login_count: logins,
     chat_total_ms_p50: latency.p50,
     chat_total_ms_p95: latency.p95,
+    chat_latency_n: latency.n,
     error_rate_1h_pct: errPct,
     chat_busy_reject_rate_1h_pct: rejectPct,
     generated_at_ts: nowMs,
