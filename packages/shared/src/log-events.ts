@@ -7,6 +7,7 @@ export const KNOWN_EVENTS = [
   'request_received',
   'chat_enqueued',
   'chat_immediate',
+  'chat_turn',
   'process_chat_start',
   'process_chat_complete',
   'process_chat_phase',

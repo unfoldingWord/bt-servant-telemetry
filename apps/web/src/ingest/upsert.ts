@@ -17,9 +17,33 @@ import type { CleanEvent } from '@bt-servant-telemetry/shared';
  * `redact()` — there is no PII check here.
  */
 
+/** SQLite has no boolean type; store as 0/1 and preserve null. */
+function boolToInt(value: boolean | null): number | null {
+  return value === null ? null : value ? 1 : 0;
+}
+
 function utcDayKey(ts: number): number {
   const d = new Date(ts);
   return d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate();
+}
+
+/**
+ * Positional bind values for the events INSERT.
+ *
+ * Extracted so the column list and the value list sit next to each other and
+ * stay the same length — a transposed or missing value here writes the wrong
+ * column with no error, which is the failure mode a wide INSERT invites.
+ */
+function eventBindValues(evt: CleanEvent): unknown[] {
+  return [
+    evt.request_id, evt.event, evt.ts, evt.level, evt.org, evt.user_hash, evt.client_id,
+    evt.total_ms, evt.duration_ms, evt.chat_type, evt.transport, evt.tool_name, evt.server_id,
+    evt.turn_id, evt.mode, evt.mode_switched_to, evt.language, evt.language_source,
+    evt.response_language, evt.user_country, evt.edge_country, evt.model, evt.iterations,
+    evt.exit_reason, evt.stop_reason, evt.mcp_calls_made, evt.input_tokens, evt.output_tokens,
+    evt.cache_creation_input_tokens, evt.cache_read_input_tokens, evt.billable_input_tokens,
+    boolToInt(evt.had_inbound_voice), boolToInt(evt.had_outbound_voice),
+  ];
 }
 
 export async function upsertEvent(db: D1Database, evt: CleanEvent): Promise<void> {
@@ -27,24 +51,16 @@ export async function upsertEvent(db: D1Database, evt: CleanEvent): Promise<void
     .prepare(
       `INSERT OR IGNORE INTO events
         (request_id, event, ts, level, org, user_hash, client_id,
-         total_ms, duration_ms, chat_type, transport, tool_name, server_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         total_ms, duration_ms, chat_type, transport, tool_name, server_id,
+         turn_id, mode, mode_switched_to, language, language_source,
+         response_language, user_country, edge_country, model, iterations,
+         exit_reason, stop_reason, mcp_calls_made, input_tokens, output_tokens,
+         cache_creation_input_tokens, cache_read_input_tokens,
+         billable_input_tokens, had_inbound_voice, had_outbound_voice)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(
-      evt.request_id,
-      evt.event,
-      evt.ts,
-      evt.level,
-      evt.org,
-      evt.user_hash,
-      evt.client_id,
-      evt.total_ms,
-      evt.duration_ms,
-      evt.chat_type,
-      evt.transport,
-      evt.tool_name,
-      evt.server_id
-    )
+    .bind(...eventBindValues(evt))
     .run();
 }
 
