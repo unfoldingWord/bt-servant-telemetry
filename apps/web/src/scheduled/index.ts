@@ -1,11 +1,12 @@
 import type { BackfillEnv } from '../backfill/index.js';
+import { flushQueuedTurns, type PostHogEnv } from '../ingest/posthog.js';
 import { runAlertSweep } from './alerts.js';
 import { runDailyDigest } from './digest.js';
 import { runMilestoneWatch } from './milestones.js';
 import { runReconcile } from './reconcile.js';
 import { consoleSink, type PostIntent, type Sink } from './sink.js';
 
-export type ScheduledEnv = BackfillEnv;
+export type ScheduledEnv = BackfillEnv & PostHogEnv;
 
 // Cron pattern → job name. Kept here (rather than in wrangler.toml)
 // because the dispatcher needs to switch on it; wrangler.toml triggers
@@ -51,6 +52,9 @@ async function dispatch(
     return [intent];
   }
   if (cron === CRON_ALERT_SWEEP) {
+    // Piggybacks on the five-minute tick: drains turns queued for PostHog
+    // when no later tail invocation has come along to do it.
+    await flushQueuedTurns(env.DB, env, nowMs);
     const { intents } = await runAlertSweep(env.DB, nowMs);
     return intents;
   }

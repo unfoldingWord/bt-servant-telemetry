@@ -1,7 +1,8 @@
 /**
  * Conversation stitching: consecutive turns by one user within the gap share a
  * session; a longer silence starts a new one. Derived entirely in this worker
- * from D1 - the engine emits no conversation id.
+ * from D1 - the engine emits no conversation id - and D1 is the only place the
+ * assignment lives (what PostHog receives is asserted in posthog.test.ts).
  */
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
@@ -68,11 +69,9 @@ describe('session stitching', () => {
     const b = await turn('b', T0 + 5 * MIN);
     await ingestBatch(env.DB, [a, b]);
 
-    expect(a.session_id).toBe('a');
-    expect(b.session_id).toBe('a'); // named after the first turn
-    expect(a.session_turn_index).toBe(1);
-    expect(b.session_turn_index).toBe(2);
-    expect((await stored('b')).session_id).toBe('a');
+    expect(await stored('a')).toEqual({ session_id: 'a', session_turn_index: 1 });
+    // named after the first turn
+    expect(await stored('b')).toEqual({ session_id: 'a', session_turn_index: 2 });
   });
 
   it('starts a new session after a silence longer than the gap', async () => {
@@ -80,8 +79,7 @@ describe('session stitching', () => {
     const b = await turn('b', T0 + 2 * 60 * MIN);
     await ingestBatch(env.DB, [a, b]);
 
-    expect(b.session_id).toBe('b');
-    expect(b.session_turn_index).toBe(1);
+    expect(await stored('b')).toEqual({ session_id: 'b', session_turn_index: 1 });
   });
 
   it('stitches across separate tail batches via D1', async () => {
@@ -89,8 +87,7 @@ describe('session stitching', () => {
     const b = await turn('b', T0 + 10 * MIN);
     await ingestBatch(env.DB, [b]); // new invocation: only D1 knows about "a"
 
-    expect(b.session_id).toBe('a');
-    expect(b.session_turn_index).toBe(2);
+    expect(await stored('b')).toEqual({ session_id: 'a', session_turn_index: 2 });
   });
 
   it('keeps different users in different sessions', async () => {
@@ -98,8 +95,7 @@ describe('session stitching', () => {
     const x = await turn('x', T0 + MIN, '15557654321');
     await ingestBatch(env.DB, [a, x]);
 
-    expect(x.session_id).toBe('x');
-    expect(x.session_turn_index).toBe(1);
+    expect(await stored('x')).toEqual({ session_id: 'x', session_turn_index: 1 });
   });
 
   it('orders a batch by timestamp before stitching', async () => {
@@ -107,9 +103,8 @@ describe('session stitching', () => {
     const b = await turn('b', T0 + 3 * MIN);
     await ingestBatch(env.DB, [b, a]); // delivered later-first
 
-    expect(a.session_id).toBe('a');
-    expect(b.session_id).toBe('a');
-    expect(b.session_turn_index).toBe(2);
+    expect(await stored('a')).toEqual({ session_id: 'a', session_turn_index: 1 });
+    expect(await stored('b')).toEqual({ session_id: 'a', session_turn_index: 2 });
   });
 
   it('places a late turn after its chronological predecessor, not the newest row', async () => {
@@ -120,8 +115,7 @@ describe('session stitching', () => {
     const late = await turn('late', T0 + 10 * MIN);
     await ingestBatch(env.DB, [late]);
 
-    expect(late.session_id).toBe('a');
-    expect(late.session_turn_index).toBe(2);
+    expect(await stored('late')).toEqual({ session_id: 'a', session_turn_index: 2 });
     expect(await stored('b')).toEqual({ session_id: 'b', session_turn_index: 1 });
   });
 
@@ -171,6 +165,19 @@ describe('session stitching', () => {
     ).all<{ session_id: string; session_turn_index: number }>();
     expect(rows.results.map((r) => r.session_id)).toEqual(Array(7).fill('a'));
     expect(rows.results.map((r) => r.session_turn_index)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it('queues a turn for PostHog only when the ingest asks for it', async () => {
+    await ingestBatch(env.DB, [await turn('tail', T0)], { posthogQueuedAt: T0 + 1 });
+    await ingestBatch(env.DB, [await turn('backfill', T0 + MIN)]); // backfill path: no stamp
+
+    const rows = await env.DB.prepare(
+      `SELECT turn_id, posthog_queued_at FROM events WHERE event = 'chat_turn' ORDER BY ts`
+    ).all<{ turn_id: string; posthog_queued_at: number | null }>();
+    expect(rows.results).toEqual([
+      { turn_id: 'tail', posthog_queued_at: T0 + 1 },
+      { turn_id: 'backfill', posthog_queued_at: null },
+    ]);
   });
 
   it('is idempotent under a replayed delivery', async () => {

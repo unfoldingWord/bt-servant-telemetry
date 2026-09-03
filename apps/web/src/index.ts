@@ -27,9 +27,11 @@ type Env = {
   ZULIP_STREAM?: string;
   ZULIP_TOPIC?: string;
   // PostHog AI observability. Key is a per-env secret; host is a var.
-  // Both optional: unset => the tail handler skips PostHog entirely.
+  // Both optional: unset => nothing is ever sent to PostHog.
   POSTHOG_API_KEY?: string;
   POSTHOG_HOST?: string;
+  /** Seconds a chat turn waits in D1 before its $ai_generation is sent. */
+  POSTHOG_SETTLE_SECONDS?: string;
   /** Inactivity gap (minutes) that splits a user's chat turns into sessions. */
   SESSION_GAP_MINUTES?: string;
   // SvelteKit static dashboard, served via Workers static assets binding.

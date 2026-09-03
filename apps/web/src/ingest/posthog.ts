@@ -1,5 +1,6 @@
 import { PostHog } from 'posthog-node';
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
+import { EVENT_COLUMN_LIST, rowToCleanEvent, type EventRow } from './event-row.js';
 
 /**
  * PostHog AI-observability emitter.
@@ -20,6 +21,16 @@ import type { CleanEvent } from '@bt-servant-telemetry/shared';
  * No message text is sent. `$ai_input` / `$ai_output_choices` are deliberately
  * absent pending the content decision — and structurally absent too, since
  * `CleanEvent` never carried the text in the first place.
+ *
+ * Delivery is QUEUED, not inline. A turn's session_id / session_turn_index
+ * can still change for a moment after it lands - a late or concurrent sibling
+ * re-stitches it in D1 (sessions.ts) - and PostHog is append-only, so an
+ * event sent from the ingesting invocation's own view could carry a session
+ * D1 no longer agrees with. Instead tail ingest stamps `posthog_queued_at`,
+ * and the flush below claims rows older than a settle window and emits them
+ * with whatever session D1 holds by then. The settle window bounds delivery
+ * disorder, not the session gap: a sibling arriving later than that can still
+ * move an already-emitted turn in D1, and PostHog keeps the earlier value.
  */
 
 export type PostHogEnv = {
@@ -27,7 +38,21 @@ export type PostHogEnv = {
   POSTHOG_HOST?: string;
   /** dev | production. One PostHog project receives both, so every event carries this. */
   ENVIRONMENT?: string;
+  /** How long a queued turn waits before emission. Default 60. */
+  POSTHOG_SETTLE_SECONDS?: string;
 };
+
+export const DEFAULT_POSTHOG_SETTLE_SECONDS = 60;
+
+/** Parse the env var; fall back to the default on missing, NaN or negative. */
+export function posthogSettleMs(raw: string | undefined): number {
+  const seconds = Number(raw);
+  const valid = Number.isFinite(seconds) && seconds >= 0;
+  return (valid ? seconds : DEFAULT_POSTHOG_SETTLE_SECONDS) * 1000;
+}
+
+/** Turns claimed per flush. Bounds one invocation's work; the rest wait for the next. */
+export const FLUSH_LIMIT = 200;
 
 /** Anthropic reports these as `number | null`; PostHog wants numbers or nothing. */
 function num(value: number | null): number | undefined {
@@ -94,13 +119,8 @@ export function toGenerationProperties(evt: CleanEvent): Record<string, unknown>
   });
 }
 
-/** A turn we can emit: it is a chat_turn AND it carries the two ids PostHog needs. */
-function isEmittableTurn(evt: CleanEvent): boolean {
-  return evt.event === 'chat_turn' && evt.user_hash !== null && evt.turn_id !== null;
-}
-
 /**
- * Build a client for ONE tail invocation. Never a module singleton: PostHog's
+ * Build a client for ONE invocation. Never a module singleton: PostHog's
  * default batching is `setTimeout`-driven and does not fire reliably in
  * workerd, so we flush on every capture and drain explicitly at the end.
  * The `fetch` wrapper must be an arrow — posthog-node calls it as a method on
@@ -118,22 +138,69 @@ function createClient(env: PostHogEnv): PostHog | null {
 }
 
 /**
- * Emit every emittable turn in the batch. Fails OPEN: a PostHog problem must
- * never break D1 ingest, which is the durable record and runs before this.
- * Failures are logged as structured JSON so they are queryable in Workers
- * Observability, matching the ingest boundary's own `telemetry_*` warnings.
+ * Atomically take ownership of up to FLUSH_LIMIT settled, unsent turns. One
+ * statement, so two invocations flushing at once get disjoint rows. Rows are
+ * returned with the session D1 holds NOW, which is the whole point.
+ */
+const CLAIM_SETTLED = `
+  UPDATE events SET posthog_emitted_at = ?1
+   WHERE rowid IN (
+     SELECT rowid FROM events
+      WHERE posthog_queued_at IS NOT NULL AND posthog_emitted_at IS NULL
+        AND posthog_queued_at <= ?2
+        AND event = 'chat_turn' AND user_hash IS NOT NULL AND turn_id IS NOT NULL
+      ORDER BY posthog_queued_at, ts
+      LIMIT ${FLUSH_LIMIT})
+   RETURNING ${EVENT_COLUMN_LIST}`;
+
+/** Hand claimed turns back to the queue so the next flush retries them. */
+const RELEASE = `UPDATE events SET posthog_emitted_at = NULL
+  WHERE request_id = ?1 AND event = 'chat_turn' AND ts = ?2`;
+
+function warn(event: string, turns: number, error: unknown): void {
+  console.warn(
+    JSON.stringify({
+      event,
+      level: 'warn',
+      turns,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  );
+}
+
+/**
+ * Emit every settled, unsent turn as an `$ai_generation`. Called after each
+ * tail ingest and from the five-minute cron, so a queue with no follow-on
+ * traffic still drains.
+ *
+ * Fails OPEN with respect to ingest: D1 is the durable record and has already
+ * been written. But delivery itself is at-least-once: a turn whose send
+ * fails is released back to the queue and retried by a later flush, and
+ * `turn_id` as the event uuid makes a duplicate send idempotent in PostHog.
  *
  * Returns the number of turns handed to the client, for tests and logs.
  */
-export async function emitTurnsToPostHog(
-  clean: CleanEvent[],
+export async function flushQueuedTurns(
+  db: D1Database,
   env: PostHogEnv,
-  ctx: ExecutionContext
+  nowMs: number
 ): Promise<number> {
-  const turns = clean.filter(isEmittableTurn);
-  if (turns.length === 0) return 0;
   const client = createClient(env);
   if (!client) return 0;
+
+  const claimed = await db
+    .prepare(CLAIM_SETTLED)
+    .bind(nowMs, nowMs - posthogSettleMs(env.POSTHOG_SETTLE_SECONDS))
+    .all<EventRow>();
+  const turns = claimed.results.map(rowToCleanEvent);
+  if (turns.length === 0) return 0;
+
+  // posthog-node reports transport failures on its emitter and then swallows
+  // them inside shutdown(), so this is the only way to learn a send failed.
+  let failure: unknown = null;
+  client.on('error', (error: unknown) => {
+    failure = error;
+  });
 
   try {
     for (const evt of turns) {
@@ -146,32 +213,16 @@ export async function emitTurnsToPostHog(
         properties,
         timestamp: new Date(evt.ts),
         // turn_id is a UUID minted per turn by the engine. Using it as the
-        // event uuid makes replayed tail deliveries idempotent in PostHog.
+        // event uuid makes a retried or replayed send idempotent in PostHog.
         uuid: evt.turn_id as string,
       });
     }
-    ctx.waitUntil(
-      client.shutdown().catch((error: unknown) => {
-        console.warn(
-          JSON.stringify({
-            event: 'posthog_flush_failed',
-            level: 'warn',
-            turns: turns.length,
-            error: error instanceof Error ? error.message : String(error),
-          })
-        );
-      })
-    );
+    await client.shutdown();
+    if (failure !== null) throw failure;
     return turns.length;
   } catch (error) {
-    console.warn(
-      JSON.stringify({
-        event: 'posthog_emit_failed',
-        level: 'warn',
-        turns: turns.length,
-        error: error instanceof Error ? error.message : String(error),
-      })
-    );
+    warn('posthog_emit_failed', turns.length, error);
+    await db.batch(turns.map((evt) => db.prepare(RELEASE).bind(evt.request_id, evt.ts)));
     return 0;
   }
 }

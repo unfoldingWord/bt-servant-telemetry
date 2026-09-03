@@ -37,8 +37,10 @@ import {
  *    user's chain). In-order delivery - the common path - never pays for the
  *    recompute: a cheap probe finds no successor and skips it.
  *
- * Known limitation: the recompute corrects D1 only. Successor turns already
- * forwarded to PostHog keep the session they were first given.
+ * Because of (2), a turn's session is MUTABLE for a short while after it
+ * lands. Nothing here hands session values back to the caller: PostHog reads
+ * them from D1 after a settle window instead (see posthog.ts), so what it
+ * receives is the converged assignment, not whatever one invocation saw.
  *
  * The gap is per-env config (`SESSION_GAP_MINUTES`) because the right value for
  * WhatsApp - replies hours apart are still one conversation - is not the right
@@ -72,6 +74,7 @@ const P = {
   userHash: factPlaceholder('user_hash'),
   turnId: factPlaceholder('turn_id'),
   gap: `?${FACT_COLUMNS.length + 1}`,
+  queuedAt: `?${FACT_COLUMNS.length + 2}`,
 };
 
 /**
@@ -87,13 +90,12 @@ const INSERT_TURN = `
        AND (ts, turn_id) < (${P.ts}, ${P.turnId})
      ORDER BY ts DESC, turn_id DESC LIMIT 1
   )
-  INSERT OR IGNORE INTO events (${FACT_COLUMN_LIST}, session_id, session_turn_index)
+  INSERT OR IGNORE INTO events
+    (${FACT_COLUMN_LIST}, session_id, session_turn_index, posthog_queued_at)
   SELECT ${FACT_PLACEHOLDERS},
     COALESCE((SELECT session_id FROM prev WHERE ${P.ts} - ts <= ${P.gap}), ${P.turnId}),
-    COALESCE((SELECT session_turn_index + 1 FROM prev WHERE ${P.ts} - ts <= ${P.gap}), 1)`;
-
-const READ_BACK = `SELECT session_id, session_turn_index FROM events
-  WHERE request_id = ?1 AND event = 'chat_turn' AND ts = ?2`;
+    COALESCE((SELECT session_turn_index + 1 FROM prev WHERE ${P.ts} - ts <= ${P.gap}), 1),
+    ${P.queuedAt}`;
 
 const HAS_SUCCESSOR = `SELECT 1 FROM events WHERE ${USER_TURNS} AND (ts, turn_id) > (?3, ?4) LIMIT 1`;
 
@@ -136,23 +138,22 @@ const RECOMPUTE_FROM = `
      AND (events.session_id IS NOT assigned.new_session_id
           OR events.session_turn_index IS NOT assigned.new_index)`;
 
-type SessionRow = { session_id: string | null; session_turn_index: number | null };
-
 /**
- * Insert a stitchable chat_turn into D1 with its session assigned, then copy
- * the stored `session_id` / `session_turn_index` back onto the CleanEvent so
- * the same object carries them on to PostHog. A replayed turn is ignored by
- * the insert and simply reads back what it was given the first time.
+ * Insert a stitchable chat_turn into D1 with its session assigned, then bring
+ * any turns stored after it back into agreement. A replayed turn is ignored by
+ * the insert and changes nothing. `posthogQueuedAt`, when given, marks the
+ * new row for PostHog delivery once its session has settled.
  */
-export async function insertTurn(db: D1Database, evt: CleanEvent, gapMs: number): Promise<void> {
+export async function insertTurn(
+  db: D1Database,
+  evt: CleanEvent,
+  gapMs: number,
+  posthogQueuedAt: number | null
+): Promise<void> {
   const inserted = await db
     .prepare(INSERT_TURN)
-    .bind(...factValues(evt), gapMs)
+    .bind(...factValues(evt), gapMs, posthogQueuedAt)
     .run();
-
-  const row = await db.prepare(READ_BACK).bind(evt.request_id, evt.ts).first<SessionRow>();
-  evt.session_id = row?.session_id ?? null;
-  evt.session_turn_index = row?.session_turn_index ?? null;
 
   // Only a NEW row can invalidate turns stored after it; a replay changes nothing.
   if (inserted.meta.changes === 0) return;

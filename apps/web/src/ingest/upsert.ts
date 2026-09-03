@@ -89,14 +89,22 @@ export async function upsertUser(db: D1Database, evt: CleanEvent): Promise<void>
     .run();
 }
 
-export type IngestOptions = { sessionGapMs?: number };
+export type IngestOptions = {
+  sessionGapMs?: number;
+  /**
+   * Stamp chat turns for PostHog delivery (ms epoch of this ingest). Omit to
+   * store without queueing - the backfill does, so history stays out of
+   * PostHog.
+   */
+  posthogQueuedAt?: number;
+};
 
 /**
  * Events are processed in timestamp order so a turn normally sees the turns
  * before it already stored; insertTurn() still copes when it does not, but
- * the in-order path is the cheap one. Session fields are assigned IN PLACE on
- * the CleanEvent, so the caller's objects carry them onward (the tail handler
- * forwards the same array to PostHog).
+ * the in-order path is the cheap one. Session fields live in D1 only - they
+ * are not copied back onto the CleanEvents, because a later arrival can still
+ * change them (see sessions.ts).
  */
 export async function ingestBatch(
   db: D1Database,
@@ -106,7 +114,7 @@ export async function ingestBatch(
   const gapMs = opts.sessionGapMs ?? sessionGapMs(undefined);
   const ordered = [...events].sort((a, b) => a.ts - b.ts);
   for (const evt of ordered) {
-    if (isStitchable(evt)) await insertTurn(db, evt, gapMs);
+    if (isStitchable(evt)) await insertTurn(db, evt, gapMs, opts.posthogQueuedAt ?? null);
     else await upsertEvent(db, evt);
     await upsertUser(db, evt);
   }

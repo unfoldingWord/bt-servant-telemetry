@@ -1,4 +1,5 @@
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
+import { NO_TURN_FACTS } from '@bt-servant-telemetry/shared';
 
 /**
  * The `events` table's fact columns - everything except the two derived
@@ -50,6 +51,10 @@ export type FactColumn = (typeof FACT_COLUMNS)[number];
 /** SQLite has no boolean type; store as 0/1 and preserve null. */
 function boolToInt(value: boolean | null): number | null {
   return value === null ? null : value ? 1 : 0;
+}
+
+function intToBool(value: number | null): boolean | null {
+  return value === null ? null : value !== 0;
 }
 
 function factRecord(evt: CleanEvent): Record<FactColumn, unknown> {
@@ -107,4 +112,62 @@ export const FACT_PLACEHOLDERS = FACT_COLUMNS.map((_, i) => `?${i + 1}`).join(',
 /** The numbered placeholder that carries a given fact column's value. */
 export function factPlaceholder(col: FactColumn): string {
   return `?${FACT_COLUMNS.indexOf(col) + 1}`;
+}
+
+/** A stored events row, as selected with `SESSION_COLUMN_LIST`. */
+export type EventRow = Record<FactColumn, unknown> & {
+  session_id: string | null;
+  session_turn_index: number | null;
+};
+
+/** Fact columns plus the two derived session columns. */
+export const EVENT_COLUMN_LIST = `${FACT_COLUMN_LIST}, session_id, session_turn_index`;
+
+/**
+ * Rebuild a CleanEvent from its stored row - the inverse of factRecord().
+ * `first_interaction` is not stored (it feeds the users table only) and
+ * reads as null.
+ */
+export function rowToCleanEvent(row: EventRow): CleanEvent {
+  const num = (v: unknown): number | null => (v === null ? null : (v as number));
+  const str = (v: unknown): string | null => (v === null ? null : (v as string));
+  return {
+    ...NO_TURN_FACTS,
+    request_id: row.request_id as string,
+    event: row.event as string,
+    ts: row.ts as number,
+    level: str(row.level),
+    org: str(row.org),
+    user_hash: str(row.user_hash),
+    client_id: str(row.client_id),
+    total_ms: num(row.total_ms),
+    duration_ms: num(row.duration_ms),
+    chat_type: str(row.chat_type),
+    transport: str(row.transport),
+    tool_name: str(row.tool_name),
+    server_id: str(row.server_id),
+    first_interaction: null,
+    turn_id: str(row.turn_id),
+    mode: str(row.mode),
+    mode_switched_to: str(row.mode_switched_to),
+    language: str(row.language),
+    language_source: str(row.language_source),
+    response_language: str(row.response_language),
+    user_country: str(row.user_country),
+    edge_country: str(row.edge_country),
+    model: str(row.model),
+    iterations: num(row.iterations),
+    exit_reason: str(row.exit_reason),
+    stop_reason: str(row.stop_reason),
+    mcp_calls_made: num(row.mcp_calls_made),
+    input_tokens: num(row.input_tokens),
+    output_tokens: num(row.output_tokens),
+    cache_creation_input_tokens: num(row.cache_creation_input_tokens),
+    cache_read_input_tokens: num(row.cache_read_input_tokens),
+    billable_input_tokens: num(row.billable_input_tokens),
+    had_inbound_voice: intToBool(num(row.had_inbound_voice)),
+    had_outbound_voice: intToBool(num(row.had_outbound_voice)),
+    session_id: row.session_id,
+    session_turn_index: row.session_turn_index,
+  };
 }

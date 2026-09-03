@@ -29,14 +29,14 @@ export const sampleLogMessages = [
  * Wrap each raw JSON message into a TraceItem so it can be passed to
  * `tailHandler` directly.
  */
-export function buildTraceItems(): TraceItem[] {
+export function buildTraceItems(messages: string[] = sampleLogMessages): TraceItem[] {
   return [
     {
       scriptName: 'bt-servant-worker',
       outcome: 'ok',
       eventTimestamp: Date.now(),
       event: null,
-      logs: sampleLogMessages.map((message) => ({
+      logs: messages.map((message) => ({
         message: [message],
         level: 'log',
         timestamp: Date.now(),

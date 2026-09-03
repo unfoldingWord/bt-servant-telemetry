@@ -1,7 +1,7 @@
 import { redact } from '../ingest/redact.js';
 import { ingestBatch } from '../ingest/upsert.js';
 import { sessionGapMs } from '../ingest/sessions.js';
-import { emitTurnsToPostHog, type PostHogEnv } from '../ingest/posthog.js';
+import { flushQueuedTurns, type PostHogEnv } from '../ingest/posthog.js';
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
 
 type Env = PostHogEnv & {
@@ -36,16 +36,27 @@ async function redactAll(rawMessages: string[], salt: string): Promise<CleanEven
   return clean;
 }
 
+export type TailOverrides = {
+  /** Wall clock for queue stamps and the settle window; tests pin it. */
+  nowMs?: number;
+};
+
 export async function tailHandler(
   events: TraceItem[],
   env: Env,
-  ctx: ExecutionContext
+  _ctx: ExecutionContext,
+  overrides: TailOverrides = {}
 ): Promise<void> {
+  const nowMs = overrides.nowMs ?? Date.now();
   const rawMessages = extractLogStrings(events);
   if (rawMessages.length === 0) return;
   const clean = await redactAll(rawMessages, env.PII_HASH_SALT);
   if (clean.length === 0) return;
-  // D1 first: it is the durable record. PostHog is best-effort and fails open.
-  await ingestBatch(env.DB, clean, { sessionGapMs: sessionGapMs(env.SESSION_GAP_MINUTES) });
-  await emitTurnsToPostHog(clean, env, ctx);
+  // D1 first: it is the durable record. Turns are queued for PostHog here and
+  // sent once settled - usually by a later invocation, or by the cron.
+  await ingestBatch(env.DB, clean, {
+    sessionGapMs: sessionGapMs(env.SESSION_GAP_MINUTES),
+    posthogQueuedAt: nowMs,
+  });
+  await flushQueuedTurns(env.DB, env, nowMs);
 }
