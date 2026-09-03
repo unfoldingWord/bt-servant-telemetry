@@ -1,10 +1,9 @@
 import { redact } from '../ingest/redact.js';
 import { ingestBatch } from '../ingest/upsert.js';
 import { sessionGapMs } from '../ingest/sessions.js';
-import { flushQueuedTurns, type PostHogEnv } from '../ingest/posthog.js';
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
 
-type Env = PostHogEnv & {
+type Env = {
   DB: D1Database;
   PII_HASH_SALT: string;
   /** Inactivity gap that splits a user's turns into conversations. Default 30. */
@@ -37,7 +36,7 @@ async function redactAll(rawMessages: string[], salt: string): Promise<CleanEven
 }
 
 export type TailOverrides = {
-  /** Wall clock for queue stamps and the settle window; tests pin it. */
+  /** Wall clock for the PostHog queue stamp; tests pin it. */
   nowMs?: number;
 };
 
@@ -52,11 +51,10 @@ export async function tailHandler(
   if (rawMessages.length === 0) return;
   const clean = await redactAll(rawMessages, env.PII_HASH_SALT);
   if (clean.length === 0) return;
-  // D1 first: it is the durable record. Turns are queued for PostHog here and
-  // sent once settled - usually by a later invocation, or by the cron.
+  // D1 is the durable record. Chat turns are stamped for PostHog here and
+  // sent by the once-a-minute cron once their session has settled.
   await ingestBatch(env.DB, clean, {
     sessionGapMs: sessionGapMs(env.SESSION_GAP_MINUTES),
     posthogQueuedAt: nowMs,
   });
-  await flushQueuedTurns(env.DB, env, nowMs);
 }

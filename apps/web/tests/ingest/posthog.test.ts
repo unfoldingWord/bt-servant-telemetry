@@ -9,7 +9,8 @@
  *   2. No key => no client, no fetch. Deploys are safe before secrets land.
  *   3. PostHog failing must never break D1 ingest — the durable record.
  *   4. What PostHog receives is the SETTLED session: turns wait in D1 for the
- *      settle window, so concurrent or late siblings re-stitch them first.
+ *      settle window, so concurrent or late siblings re-stitch them first,
+ *      and only the once-a-minute cron sends them.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import {
@@ -20,14 +21,14 @@ import {
 } from 'cloudflare:test';
 import { tailHandler } from '../../src/tail/index.js';
 import {
-  CRON_ALERT_SWEEP,
+  CRON_POSTHOG_FLUSH,
   scheduledHandler,
   type ScheduledEnv,
 } from '../../src/scheduled/index.js';
 import {
-  CLAIM_LEASE_MS,
   flushQueuedTurns,
   toGenerationProperties,
+  type PostHogEnv,
 } from '../../src/ingest/posthog.js';
 import { redact } from '../../src/ingest/redact.js';
 import { buildTraceItems, sampleLogMessages } from '../fixtures/sample-tail-events.js';
@@ -41,7 +42,7 @@ declare module 'cloudflare:test' {
 }
 
 const PH_HOST = 'https://ph.test';
-/** Settle of 0: a turn is sent by the same invocation that ingests it. */
+/** Settle of 0: a turn is eligible for the very next tick after ingest. */
 const withPostHog = {
   ...env,
   POSTHOG_API_KEY: 'phc_test_key',
@@ -123,9 +124,23 @@ function generationsFrom(seen: Captured[]): Array<Record<string, unknown>> {
   });
 }
 
-async function runTail(e: typeof withPostHog | typeof env): Promise<void> {
+/** Ingest the fixture batch, then run the cron tick that sends to PostHog. */
+async function runTailThenTick(e: typeof withPostHog | typeof env): Promise<void> {
   const ctx = createExecutionContext();
   await tailHandler(buildTraceItems(), e, ctx);
+  await waitOnExecutionContext(ctx);
+  await flushQueuedTurns(env.DB, e as PostHogEnv, Date.now());
+}
+
+/** The real dispatcher path: the once-a-minute cron and nothing else. */
+async function cronTick(e: typeof withPostHog, nowMs: number): Promise<void> {
+  const ctx = createExecutionContext();
+  await scheduledHandler(
+    { cron: CRON_POSTHOG_FLUSH, scheduledTime: nowMs, noRetry: () => undefined },
+    e as unknown as ScheduledEnv,
+    ctx,
+    { sink: vi.fn(), nowMs }
+  );
   await waitOnExecutionContext(ctx);
 }
 
@@ -170,10 +185,10 @@ describe('mapping a turn to $ai_generation', () => {
   });
 });
 
-describe('tail handler -> PostHog', () => {
+describe('tail ingest -> cron tick -> PostHog', () => {
   it('emits exactly one $ai_generation for the one chat_turn, keyed by user_hash and turn_id', async () => {
     const seen = stubPostHogFetch();
-    await runTail(withPostHog);
+    await runTailThenTick(withPostHog);
 
     const gens = generationsFrom(seen);
     expect(gens).toHaveLength(1);
@@ -196,68 +211,73 @@ describe('tail handler -> PostHog', () => {
 
   it('sends nothing at all when POSTHOG_API_KEY is unset', async () => {
     const seen = stubPostHogFetch();
-    await runTail(env);
+    await runTailThenTick(env);
     expect(seen).toHaveLength(0);
   });
 
-  it('still ingests to D1 when PostHog is unreachable', async () => {
+  it('keeps a turn unsent when PostHog is unreachable, and sends it on a later tick', async () => {
     // posthog-node reports transport failures through its own logger
-    // (console.error) after exhausting retries; our own warn covers a
-    // rejected shutdown. Either way the failure must be visible, not silent.
+    // (console.error) after exhausting retries; our own warn covers the
+    // failed batch. Either way the failure must be visible, not silent.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     stubPostHogFetch(503);
-    await runTail(withPostHog);
+    await runTailThenTick(withPostHog);
 
     const row = await env.DB.prepare(
-      `SELECT turn_id, posthog_claimed_at, posthog_emitted_at FROM events WHERE event = 'chat_turn'`
-    ).first<{
-      turn_id: string;
-      posthog_claimed_at: number | null;
-      posthog_emitted_at: number | null;
-    }>();
-    expect(row?.turn_id).toBe('7ca7aedd-cc08-494d-9102-a1277a0f2775');
-    // the failed turn's lease was released so the next flush retries at once
-    expect(row?.posthog_claimed_at).toBeNull();
-    expect(row?.posthog_emitted_at).toBeNull();
-    // and the failure was observable, not swallowed
+      `SELECT turn_id, posthog_emitted_at FROM events WHERE event = 'chat_turn'`
+    ).first<{ turn_id: string; posthog_emitted_at: number | null }>();
+    expect(row?.turn_id).toBe('7ca7aedd-cc08-494d-9102-a1277a0f2775'); // D1 ingest unaffected
+    expect(row?.posthog_emitted_at).toBeNull(); // not marked: still owed to PostHog
     const msgs = [...warn.mock.calls, ...err.mock.calls].map((c) => c.map(String).join(' '));
     expect(msgs.some((m) => /posthog/i.test(m))).toBe(true);
+
+    // PostHog comes back: the next tick sends exactly that turn.
+    vi.restoreAllMocks();
+    const seen = stubPostHogFetch();
+    expect(await flushQueuedTurns(env.DB, withPostHog, Date.now())).toBe(1);
+    expect(generationsFrom(seen).map((g) => g.uuid)).toEqual([
+      '7ca7aedd-cc08-494d-9102-a1277a0f2775',
+    ]);
   });
 });
 
 describe('settled delivery', () => {
-  it('holds a turn for the settle window, then a later invocation sends it', async () => {
+  it('holds a turn for the settle window, then the cron sends it with its D1 session', async () => {
     const seen = stubPostHogFetch();
     await runTailAt(withSettle, [turnMessage('a', NOW - 5 * MIN)], NOW);
-    expect(generationsFrom(seen)).toHaveLength(0); // queued, not sent
+    await cronTick(withSettle, NOW + 30_000);
+    expect(generationsFrom(seen)).toHaveLength(0); // queued, not yet settled
 
-    // A later turn's invocation drains what has settled - but not itself yet.
-    await runTailAt(withSettle, [turnMessage('b', NOW)], NOW + 61_000);
+    await cronTick(withSettle, NOW + 61_000);
     const gens = generationsFrom(seen);
     expect(gens.map((g) => g.uuid)).toEqual([U('a')]);
     expect(sessionOf(gens[0] as Record<string, unknown>)).toEqual({ id: U('a'), index: 1 });
-
-    const pending = await env.DB.prepare(
-      `SELECT turn_id FROM events WHERE posthog_emitted_at IS NULL AND posthog_queued_at IS NOT NULL`
-    ).all<{ turn_id: string }>();
-    expect(pending.results.map((r) => r.turn_id)).toEqual([U('b')]);
   });
 
-  it('is drained by the five-minute cron when no tail invocation follows', async () => {
+  it('does not send from the tail handler itself', async () => {
     const seen = stubPostHogFetch();
-    await runTailAt(withSettle, [turnMessage('a', NOW - 5 * MIN)], NOW);
-    expect(generationsFrom(seen)).toHaveLength(0);
+    await runTailAt(withPostHog, [turnMessage('a', NOW - 5 * MIN)], NOW); // settle 0
+    expect(seen).toHaveLength(0);
+  });
 
-    const sink = vi.fn();
-    const ctx = createExecutionContext();
-    await scheduledHandler(
-      { cron: CRON_ALERT_SWEEP, scheduledTime: NOW + 5 * MIN, noRetry: () => undefined },
-      withSettle as unknown as ScheduledEnv,
-      ctx,
-      { sink, nowMs: NOW + 5 * MIN }
-    );
-    await waitOnExecutionContext(ctx);
+  it('marks a turn emitted only after PostHog accepts it, then never resends', async () => {
+    const seen = stubPostHogFetch();
+    await runTailAt(withSettle, [turnMessage('a', NOW)], NOW);
+    const emittedAt = async (): Promise<number | null> =>
+      (
+        await env.DB.prepare(
+          `SELECT posthog_emitted_at FROM events WHERE event = 'chat_turn'`
+        ).first<{
+          posthog_emitted_at: number | null;
+        }>()
+      )?.posthog_emitted_at ?? null;
+    expect(await emittedAt()).toBeNull();
+
+    await cronTick(withSettle, NOW + 61_000);
+    expect(await emittedAt()).toBe(NOW + 61_000);
+
+    await cronTick(withSettle, NOW + 10 * MIN); // emitted is final
     expect(generationsFrom(seen).map((g) => g.uuid)).toEqual([U('a')]);
   });
 
@@ -271,76 +291,13 @@ describe('settled delivery', () => {
     const names = ['t6', 't5', 't4', 't3', 't2', 't1'];
     const tsOf = (n: string): number => NOW - (7 - Number(n.slice(1))) * MIN;
     await Promise.all(names.map((n) => runTailAt(withSettle, [turnMessage(n, tsOf(n))], NOW)));
-    // Only 'a' had settled by then; the six are still waiting.
-    expect(generationsFrom(seen).map((g) => g.uuid)).toEqual([U('a')]);
 
-    const sent = await flushQueuedTurns(env.DB, withSettle, NOW + 61_000);
-    expect(sent).toBe(6);
-    const gens = generationsFrom(seen)
-      .slice(1)
-      .map((g) => ({ uuid: g.uuid, ...sessionOf(g) }));
-    expect(gens.map((g) => g.id)).toEqual(Array(6).fill(U('a')));
+    await cronTick(withSettle, NOW + 61_000);
+    const gens = generationsFrom(seen).map((g) => ({ uuid: g.uuid, ...sessionOf(g) }));
+    expect(gens.map((g) => g.id)).toEqual(Array(7).fill(U('a')));
     const indexByName = Object.fromEntries(
-      names.map((n) => [n, gens.find((g) => g.uuid === U(n))?.index])
+      ['a', ...names].map((n) => [n, gens.find((g) => g.uuid === U(n))?.index])
     );
-    expect(indexByName).toEqual({ t1: 2, t2: 3, t3: 4, t4: 5, t5: 6, t6: 7 });
-  });
-
-  it('marks a turn emitted only after PostHog accepts it, then never resends', async () => {
-    const seen = stubPostHogFetch();
-    await runTailAt(withSettle, [turnMessage('a', NOW)], NOW);
-    const before = await env.DB.prepare(
-      `SELECT posthog_claimed_at, posthog_emitted_at FROM events WHERE event = 'chat_turn'`
-    ).first<{ posthog_claimed_at: number | null; posthog_emitted_at: number | null }>();
-    expect(before).toEqual({ posthog_claimed_at: null, posthog_emitted_at: null });
-
-    await flushQueuedTurns(env.DB, withSettle, NOW + 61_000);
-    const after = await env.DB.prepare(
-      `SELECT posthog_claimed_at, posthog_emitted_at FROM events WHERE event = 'chat_turn'`
-    ).first<{ posthog_claimed_at: number | null; posthog_emitted_at: number | null }>();
-    expect(after).toEqual({ posthog_claimed_at: NOW + 61_000, posthog_emitted_at: NOW + 61_000 });
-
-    // Emitted is final: a much later flush leaves it alone.
-    await flushQueuedTurns(env.DB, withSettle, NOW + CLAIM_LEASE_MS * 10);
-    expect(generationsFrom(seen).map((g) => g.uuid)).toEqual([U('a')]);
-  });
-
-  it('recovers a claim abandoned by a terminated invocation once its lease expires', async () => {
-    const seen = stubPostHogFetch();
-    await runTailAt(withSettle, [turnMessage('a', NOW)], NOW);
-    // An invocation leased the row and then died before PostHog answered:
-    // the lease is set, the emitted marker is not, and nobody will release it.
-    const crashedAt = NOW + 61_000;
-    await env.DB.prepare(`UPDATE events SET posthog_claimed_at = ?1 WHERE event = 'chat_turn'`)
-      .bind(crashedAt)
-      .run();
-
-    // While the lease is live, other flushes leave the row to its holder.
-    expect(await flushQueuedTurns(env.DB, withSettle, crashedAt + CLAIM_LEASE_MS - 1)).toBe(0);
-    expect(generationsFrom(seen)).toHaveLength(0);
-
-    // Once it expires, the row is claimed again and finally sent.
-    expect(await flushQueuedTurns(env.DB, withSettle, crashedAt + CLAIM_LEASE_MS)).toBe(1);
-    expect(generationsFrom(seen).map((g) => g.uuid)).toEqual([U('a')]);
-    const row = await env.DB.prepare(
-      `SELECT posthog_emitted_at FROM events WHERE event = 'chat_turn'`
-    ).first<{ posthog_emitted_at: number | null }>();
-    expect(row?.posthog_emitted_at).toBe(crashedAt + CLAIM_LEASE_MS);
-  });
-
-  it('claims each queued turn exactly once across concurrent flushes', async () => {
-    const seen = stubPostHogFetch();
-    const turns = ['a', 'b', 'c', 'd'].map((id, i) => turnMessage(id, NOW + i * MIN));
-    await runTailAt(withSettle, turns, NOW);
-
-    await Promise.all([
-      flushQueuedTurns(env.DB, withSettle, NOW + 61_000),
-      flushQueuedTurns(env.DB, withSettle, NOW + 61_000),
-    ]);
-    expect(
-      generationsFrom(seen)
-        .map((g) => g.uuid)
-        .sort()
-    ).toEqual(['a', 'b', 'c', 'd'].map(U));
+    expect(indexByName).toEqual({ a: 1, t1: 2, t2: 3, t3: 4, t4: 5, t5: 6, t6: 7 });
   });
 });

@@ -4,6 +4,7 @@ import {
   CRON_ALERT_SWEEP,
   CRON_DIGEST,
   CRON_MILESTONE_WATCH,
+  CRON_POSTHOG_FLUSH,
   CRON_RECONCILE,
   scheduledHandler,
   type PostIntent,
@@ -61,6 +62,16 @@ describe('scheduledHandler dispatcher', () => {
     expect(intents.map((i) => (i.kind === 'alert' ? i.alertKind : i.kind))).toEqual([
       'worker_offline',
     ]);
+  });
+
+  it('routes the PostHog flush cron and posts nothing', async () => {
+    const sink = vi.fn();
+    // No POSTHOG_API_KEY in the test env: the tick is a no-op that touches nothing.
+    await scheduledHandler(makeController(CRON_POSTHOG_FLUSH), scheduledEnv, ctx, {
+      sink,
+      nowMs: NOW,
+    });
+    expect(sink).not.toHaveBeenCalled();
   });
 
   it('routes the digest cron to runDailyDigest', async () => {

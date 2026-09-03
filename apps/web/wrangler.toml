@@ -24,7 +24,7 @@ head_sampling_rate = 1
 # exactly. Per-env overrides repeat them so a deploy to a single env carries
 # its own trigger set.
 [triggers]
-crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *"]
+crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *", "* * * * *"]
 
 [vars]
 # Inactivity gap (minutes) between a user's turns before a new conversation starts.
@@ -78,7 +78,7 @@ enabled = true
 head_sampling_rate = 1
 
 [env.dev.triggers]
-crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *"]
+crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *", "* * * * *"]
 
 [[env.dev.d1_databases]]
 binding = "DB"
@@ -112,7 +112,7 @@ enabled = true
 head_sampling_rate = 0.1
 
 [env.production.triggers]
-crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *"]
+crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *", "* * * * *"]
 
 [[env.production.d1_databases]]
 binding = "DB"

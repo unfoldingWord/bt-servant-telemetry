@@ -15,6 +15,7 @@ export const CRON_RECONCILE = '0 3 * * *';
 export const CRON_DIGEST = '0 9 * * *';
 export const CRON_ALERT_SWEEP = '*/5 * * * *';
 export const CRON_MILESTONE_WATCH = '*/15 * * * *';
+export const CRON_POSTHOG_FLUSH = '* * * * *';
 
 export type ScheduledOverrides = {
   sink?: Sink;
@@ -52,11 +53,13 @@ async function dispatch(
     return [intent];
   }
   if (cron === CRON_ALERT_SWEEP) {
-    // Piggybacks on the five-minute tick: drains turns queued for PostHog
-    // when no later tail invocation has come along to do it.
-    await flushQueuedTurns(env.DB, env, nowMs);
     const { intents } = await runAlertSweep(env.DB, nowMs);
     return intents;
+  }
+  if (cron === CRON_POSTHOG_FLUSH) {
+    // The only PostHog sender. Posts nothing to Zulip.
+    await flushQueuedTurns(env.DB, env, nowMs);
+    return [];
   }
   if (cron === CRON_MILESTONE_WATCH) {
     const { intents } = await runMilestoneWatch(env.DB, nowMs);

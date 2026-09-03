@@ -27,10 +27,15 @@ import { EVENT_COLUMN_LIST, rowToCleanEvent, type EventRow } from './event-row.j
  * re-stitches it in D1 (sessions.ts) - and PostHog is append-only, so an
  * event sent from the ingesting invocation's own view could carry a session
  * D1 no longer agrees with. Instead tail ingest stamps `posthog_queued_at`,
- * and the flush below claims rows older than a settle window and emits them
- * with whatever session D1 holds by then. The settle window bounds delivery
- * disorder, not the session gap: a sibling arriving later than that can still
- * move an already-emitted turn in D1, and PostHog keeps the earlier value.
+ * and a once-a-minute cron (the ONLY sender) emits rows older than a settle
+ * window with whatever session D1 holds by then. The settle window bounds
+ * delivery disorder, not the session gap: a sibling arriving later than that
+ * can still move an already-emitted turn in D1, and PostHog keeps the
+ * earlier value.
+ *
+ * One sender means no claim or lease is needed: ticks do not overlap, and a
+ * tick that dies mid-send simply leaves its rows unmarked for the next one.
+ * `turn_id` as the event uuid makes the resulting resend idempotent.
  */
 
 export type PostHogEnv = {
@@ -51,15 +56,8 @@ export function posthogSettleMs(raw: string | undefined): number {
   return (valid ? seconds : DEFAULT_POSTHOG_SETTLE_SECONDS) * 1000;
 }
 
-/** Turns claimed per flush. Bounds one invocation's work; the rest wait for the next. */
+/** Turns sent per tick. Bounds one invocation's work; the rest wait for the next. */
 export const FLUSH_LIMIT = 200;
-
-/**
- * How long a claim is honoured before another flush may take the row over.
- * Must outlast the slowest honest flush: posthog-node's shutdown() gives up
- * after 30s. Five minutes also matches the cron tick that drains stragglers.
- */
-export const CLAIM_LEASE_MS = 5 * 60_000;
 
 /** Anthropic reports these as `number | null`; PostHog wants numbers or nothing. */
 function num(value: number | null): number | undefined {
@@ -145,35 +143,20 @@ function createClient(env: PostHogEnv): PostHog | null {
 }
 
 /**
- * Atomically LEASE up to FLUSH_LIMIT settled, unsent turns: one statement, so
- * two invocations flushing at once get disjoint rows. A row is eligible when
- * it has settled and either nobody holds it or the holder's lease has
- * expired - a Worker that was terminated, timed out or crashed mid-flush
- * leaves its lease behind, and this is what gets those rows sent after all.
- * Rows come back with the session D1 holds NOW, which is the whole point.
- *
- * Binds: ?1 now, ?2 settle cutoff (queued at or before), ?3 lease cutoff
- * (claimed at or before = expired).
+ * The oldest FLUSH_LIMIT settled, unsent turns, with the session D1 holds NOW
+ * - which is the whole point. Binds: ?1 settle cutoff (queued at or before).
  */
-const CLAIM_SETTLED = `
-  UPDATE events SET posthog_claimed_at = ?1
-   WHERE rowid IN (
-     SELECT rowid FROM events
-      WHERE posthog_queued_at IS NOT NULL AND posthog_emitted_at IS NULL
-        AND posthog_queued_at <= ?2
-        AND (posthog_claimed_at IS NULL OR posthog_claimed_at <= ?3)
-        AND event = 'chat_turn' AND user_hash IS NOT NULL AND turn_id IS NOT NULL
-      ORDER BY posthog_queued_at, ts
-      LIMIT ${FLUSH_LIMIT})
-   RETURNING ${EVENT_COLUMN_LIST}`;
+const SELECT_SETTLED = `
+  SELECT ${EVENT_COLUMN_LIST} FROM events
+   WHERE posthog_queued_at IS NOT NULL AND posthog_emitted_at IS NULL
+     AND posthog_queued_at <= ?1
+     AND event = 'chat_turn' AND user_hash IS NOT NULL AND turn_id IS NOT NULL
+   ORDER BY posthog_queued_at, ts
+   LIMIT ${FLUSH_LIMIT}`;
 
 /** Final marker, written only once PostHog has accepted the batch. */
 const MARK_EMITTED = `UPDATE events SET posthog_emitted_at = ?1
   WHERE request_id = ?2 AND event = 'chat_turn' AND ts = ?3`;
-
-/** Give a lease back early so the next flush retries without waiting it out. */
-const RELEASE = `UPDATE events SET posthog_claimed_at = NULL
-  WHERE request_id = ?1 AND event = 'chat_turn' AND ts = ?2`;
 
 function warn(event: string, turns: number, error: unknown): void {
   console.warn(
@@ -187,16 +170,14 @@ function warn(event: string, turns: number, error: unknown): void {
 }
 
 /**
- * Emit every settled, unsent turn as an `$ai_generation`. Called after each
- * tail ingest and from the five-minute cron, so a queue with no follow-on
- * traffic still drains.
+ * Emit every settled, unsent turn as an `$ai_generation`. Runs from the
+ * once-a-minute cron and nowhere else.
  *
- * Fails OPEN with respect to ingest: D1 is the durable record and has already
- * been written. But delivery itself is at-least-once: a turn is marked
- * emitted only after PostHog accepts it; a send that fails is released at
- * once, and one whose invocation died is reclaimed when its lease expires.
- * `turn_id` as the event uuid makes the resulting duplicate sends - a crash
- * after acceptance but before the marker - idempotent in PostHog.
+ * Fails OPEN with respect to ingest: D1 is the durable record and was written
+ * by the tail handler long before this runs. Delivery itself is at-least-once:
+ * a turn is marked emitted only after PostHog accepts it, so a tick that
+ * fails or dies leaves its rows for the next tick, and `turn_id` as the event
+ * uuid makes the resend idempotent in PostHog.
  *
  * Returns the number of turns handed to the client, for tests and logs.
  */
@@ -208,11 +189,11 @@ export async function flushQueuedTurns(
   const client = createClient(env);
   if (!client) return 0;
 
-  const claimed = await db
-    .prepare(CLAIM_SETTLED)
-    .bind(nowMs, nowMs - posthogSettleMs(env.POSTHOG_SETTLE_SECONDS), nowMs - CLAIM_LEASE_MS)
+  const settled = await db
+    .prepare(SELECT_SETTLED)
+    .bind(nowMs - posthogSettleMs(env.POSTHOG_SETTLE_SECONDS))
     .all<EventRow>();
-  const turns = claimed.results.map(rowToCleanEvent);
+  const turns = settled.results.map(rowToCleanEvent);
   if (turns.length === 0) return 0;
 
   // posthog-node reports transport failures on its emitter and then swallows
@@ -245,7 +226,6 @@ export async function flushQueuedTurns(
     return turns.length;
   } catch (error) {
     warn('posthog_emit_failed', turns.length, error);
-    await db.batch(turns.map((evt) => db.prepare(RELEASE).bind(evt.request_id, evt.ts)));
-    return 0;
+    return 0; // nothing marked: the next tick sends these again
   }
 }
