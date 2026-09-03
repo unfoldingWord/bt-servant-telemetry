@@ -18,8 +18,8 @@
   "dependencies": {
     "@bt-servant-telemetry/shared": "workspace:*",
     "@pqina/flip": "^1.6.4",
-    "echarts": "^5.6.0",
-    "hono": "^4.12.25",
+    "echarts": "^6.1.0",
+    "hono": "^4.13.5",
     "posthog-node": "5.51.6",
     "svelte-echarts": "^1.0.0",
     "zod": "^3.25.76"

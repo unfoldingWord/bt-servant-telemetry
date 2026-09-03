@@ -46,5 +46,12 @@
     "node": ">=20.0.0",
     "pnpm": ">=9.0.0"
   },
-  "packageManager": "pnpm@9.15.4"
+  "packageManager": "pnpm@9.15.4",
+  "pnpm": {
+    "peerDependencyRules": {
+      "allowedVersions": {
+        "svelte-echarts>echarts": "6"
+      }
+    }
+  }
 }
