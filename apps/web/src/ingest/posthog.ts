@@ -25,6 +25,8 @@ import type { CleanEvent } from '@bt-servant-telemetry/shared';
 export type PostHogEnv = {
   POSTHOG_API_KEY?: string;
   POSTHOG_HOST?: string;
+  /** dev | production. One PostHog project receives both, so every event carries this. */
+  ENVIRONMENT?: string;
 };
 
 /** Anthropic reports these as `number | null`; PostHog wants numbers or nothing. */
@@ -132,10 +134,13 @@ export async function emitTurnsToPostHog(
 
   try {
     for (const evt of turns) {
+      const properties = toGenerationProperties(evt);
+      // Event-level, never $set: the same person can appear in both environments.
+      if (env.ENVIRONMENT) properties.environment = env.ENVIRONMENT;
       client.capture({
         distinctId: evt.user_hash as string,
         event: '$ai_generation',
-        properties: toGenerationProperties(evt),
+        properties,
         timestamp: new Date(evt.ts),
         // turn_id is a UUID minted per turn by the engine. Using it as the
         // event uuid makes replayed tail deliveries idempotent in PostHog.
