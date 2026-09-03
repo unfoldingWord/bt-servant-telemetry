@@ -1,4 +1,5 @@
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
+import { assignSession, sessionGapMs } from './sessions.js';
 
 /**
  * D1 writes for a CleanEvent batch. All writes are idempotent and
@@ -43,6 +44,7 @@ function eventBindValues(evt: CleanEvent): unknown[] {
     evt.exit_reason, evt.stop_reason, evt.mcp_calls_made, evt.input_tokens, evt.output_tokens,
     evt.cache_creation_input_tokens, evt.cache_read_input_tokens, evt.billable_input_tokens,
     boolToInt(evt.had_inbound_voice), boolToInt(evt.had_outbound_voice),
+    evt.session_id, evt.session_turn_index,
   ];
 }
 
@@ -56,9 +58,10 @@ export async function upsertEvent(db: D1Database, evt: CleanEvent): Promise<void
          response_language, user_country, edge_country, model, iterations,
          exit_reason, stop_reason, mcp_calls_made, input_tokens, output_tokens,
          cache_creation_input_tokens, cache_read_input_tokens,
-         billable_input_tokens, had_inbound_voice, had_outbound_voice)
+         billable_input_tokens, had_inbound_voice, had_outbound_voice,
+         session_id, session_turn_index)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(...eventBindValues(evt))
     .run();
@@ -113,8 +116,24 @@ export async function upsertUser(db: D1Database, evt: CleanEvent): Promise<void>
     .run();
 }
 
-export async function ingestBatch(db: D1Database, events: CleanEvent[]): Promise<void> {
-  for (const evt of events) {
+export type IngestOptions = { sessionGapMs?: number };
+
+/**
+ * Events are processed in timestamp order so a turn always sees the turns
+ * before it - that is what lets assignSession() stitch consecutive turns in
+ * the same batch. Session fields are assigned IN PLACE on the CleanEvent, so
+ * the caller's objects carry them onward (the tail handler forwards the same
+ * array to PostHog).
+ */
+export async function ingestBatch(
+  db: D1Database,
+  events: CleanEvent[],
+  opts: IngestOptions = {}
+): Promise<void> {
+  const gapMs = opts.sessionGapMs ?? sessionGapMs(undefined);
+  const ordered = [...events].sort((a, b) => a.ts - b.ts);
+  for (const evt of ordered) {
+    await assignSession(db, evt, gapMs);
     await upsertEvent(db, evt);
     await upsertUser(db, evt);
   }

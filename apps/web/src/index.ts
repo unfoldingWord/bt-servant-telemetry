@@ -30,6 +30,8 @@ type Env = {
   // Both optional: unset => the tail handler skips PostHog entirely.
   POSTHOG_API_KEY?: string;
   POSTHOG_HOST?: string;
+  /** Inactivity gap (minutes) that splits a user's chat turns into sessions. */
+  SESSION_GAP_MINUTES?: string;
   // SvelteKit static dashboard, served via Workers static assets binding.
   // Optional so vitest-pool-workers integration tests (which don't ship
   // the dashboard build) still run.

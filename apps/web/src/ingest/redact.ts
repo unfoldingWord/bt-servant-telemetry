@@ -78,6 +78,9 @@ function extractTurnFacts(obj: Record<string, unknown>): TurnFacts {
     billable_input_tokens: asNumber(obj.billable_input_tokens),
     had_inbound_voice: asBool(obj.had_inbound_voice),
     had_outbound_voice: asBool(obj.had_outbound_voice),
+    // Not on the wire. Derived during ingest by assignSession() from prior turns.
+    session_id: null,
+    session_turn_index: null,
   };
 }
 

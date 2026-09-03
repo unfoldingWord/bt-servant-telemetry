@@ -1,11 +1,14 @@
 import { redact } from '../ingest/redact.js';
 import { ingestBatch } from '../ingest/upsert.js';
+import { sessionGapMs } from '../ingest/sessions.js';
 import { emitTurnsToPostHog, type PostHogEnv } from '../ingest/posthog.js';
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
 
 type Env = PostHogEnv & {
   DB: D1Database;
   PII_HASH_SALT: string;
+  /** Inactivity gap that splits a user's turns into conversations. Default 30. */
+  SESSION_GAP_MINUTES?: string;
 };
 
 /**
@@ -43,6 +46,6 @@ export async function tailHandler(
   const clean = await redactAll(rawMessages, env.PII_HASH_SALT);
   if (clean.length === 0) return;
   // D1 first: it is the durable record. PostHog is best-effort and fails open.
-  await ingestBatch(env.DB, clean);
+  await ingestBatch(env.DB, clean, { sessionGapMs: sessionGapMs(env.SESSION_GAP_MINUTES) });
   await emitTurnsToPostHog(clean, env, ctx);
 }

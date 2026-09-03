@@ -126,6 +126,11 @@ describe('tail handler -> PostHog', () => {
     );
     // dev and production share one PostHog project; this is what keeps them apart
     expect((g.properties as Record<string, unknown>).environment).toBe('test');
+    // a lone turn is a session of one, named after itself
+    expect((g.properties as Record<string, unknown>).$ai_session_id).toBe(
+      '7ca7aedd-cc08-494d-9102-a1277a0f2775'
+    );
+    expect((g.properties as Record<string, unknown>).session_turn_index).toBe(1);
     // raw phone number must never appear anywhere in what left the process
     expect(JSON.stringify(seen)).not.toContain('15551234567');
   });

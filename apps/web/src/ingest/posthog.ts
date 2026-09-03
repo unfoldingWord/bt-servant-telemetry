@@ -58,6 +58,9 @@ export function toGenerationProperties(evt: CleanEvent): Record<string, unknown>
   return compact({
     // ── PostHog AI observability contract ──
     $ai_trace_id: evt.turn_id,
+    // Groups consecutive turns into one conversation in the trace view.
+    $ai_session_id: evt.session_id,
+    session_turn_index: num(evt.session_turn_index),
     $ai_model: evt.model,
     $ai_provider: 'anthropic',
     $ai_input_tokens: num(evt.input_tokens),

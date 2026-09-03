@@ -66,6 +66,10 @@ export type CleanEvent = {
   had_inbound_voice: boolean | null;
   /** Turn produced a voice reply (TTS spend, not captured here). */
   had_outbound_voice: boolean | null;
+  /** Derived at ingest (ingest/sessions.ts): turn_id of the session's first turn. */
+  session_id: string | null;
+  /** Derived at ingest: 1-based position of this turn within its session. */
+  session_turn_index: number | null;
 };
 
 /** The chat_turn-only half of CleanEvent. */
@@ -91,6 +95,8 @@ export type TurnFacts = Pick<
   | 'billable_input_tokens'
   | 'had_inbound_voice'
   | 'had_outbound_voice'
+  | 'session_id'
+  | 'session_turn_index'
 >;
 
 /**
@@ -123,4 +129,6 @@ export const NO_TURN_FACTS: TurnFacts = {
   billable_input_tokens: null,
   had_inbound_voice: null,
   had_outbound_voice: null,
+  session_id: null,
+  session_turn_index: null,
 };
