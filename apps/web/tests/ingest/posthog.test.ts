@@ -10,7 +10,12 @@
  *   3. PostHog failing must never break D1 ingest — the durable record.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
-import { env, applyD1Migrations, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
+import {
+  env,
+  applyD1Migrations,
+  createExecutionContext,
+  waitOnExecutionContext,
+} from 'cloudflare:test';
 import { tailHandler } from '../../src/tail/index.js';
 import { toGenerationProperties } from '../../src/ingest/posthog.js';
 import { redact } from '../../src/ingest/redact.js';
@@ -48,11 +53,15 @@ function stubPostHogFetch(status = 200): Captured[] {
   const seen: Captured[] = [];
   const real = globalThis.fetch.bind(globalThis);
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const url =
+      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     if (!url.startsWith(PH_HOST)) return real(input, init);
     if (status >= 500) throw new Error('posthog unreachable');
     seen.push({ url, body: await decodeBody(init) });
-    return new Response('{"status":1}', { status, headers: { 'content-type': 'application/json' } });
+    return new Response('{"status":1}', {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
   });
   return seen;
 }
@@ -150,9 +159,9 @@ describe('tail handler -> PostHog', () => {
     stubPostHogFetch(503);
     await runTail(withPostHog);
 
-    const row = await env.DB.prepare(
-      `SELECT turn_id FROM events WHERE event = 'chat_turn'`
-    ).first<{ turn_id: string }>();
+    const row = await env.DB.prepare(`SELECT turn_id FROM events WHERE event = 'chat_turn'`).first<{
+      turn_id: string;
+    }>();
     expect(row?.turn_id).toBe('7ca7aedd-cc08-494d-9102-a1277a0f2775');
     // and the failure was observable, not swallowed
     const msgs = [...warn.mock.calls, ...err.mock.calls].map((c) => c.map(String).join(' '));
