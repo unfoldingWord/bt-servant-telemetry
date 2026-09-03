@@ -1,4 +1,6 @@
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
+import { FACT_COLUMNS, FACT_COLUMN_LIST, FACT_PLACEHOLDERS, factValues } from './event-row.js';
+import { insertTurn, isStitchable, sessionGapMs } from './sessions.js';
 
 /**
  * D1 writes for a CleanEvent batch. All writes are idempotent and
@@ -22,29 +24,19 @@ function utcDayKey(ts: number): number {
   return d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate();
 }
 
+/**
+ * Plain events (and chat turns that cannot be stitched) carry whatever
+ * session fields they arrived with - null, in practice. Stitchable chat turns
+ * go through insertTurn() instead, which derives the session in-statement.
+ */
 export async function upsertEvent(db: D1Database, evt: CleanEvent): Promise<void> {
+  const n = FACT_COLUMNS.length;
   await db
     .prepare(
-      `INSERT OR IGNORE INTO events
-        (request_id, event, ts, level, org, user_hash, client_id,
-         total_ms, duration_ms, chat_type, transport, tool_name, server_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT OR IGNORE INTO events (${FACT_COLUMN_LIST}, session_id, session_turn_index)
+       VALUES (${FACT_PLACEHOLDERS}, ?${n + 1}, ?${n + 2})`
     )
-    .bind(
-      evt.request_id,
-      evt.event,
-      evt.ts,
-      evt.level,
-      evt.org,
-      evt.user_hash,
-      evt.client_id,
-      evt.total_ms,
-      evt.duration_ms,
-      evt.chat_type,
-      evt.transport,
-      evt.tool_name,
-      evt.server_id
-    )
+    .bind(...factValues(evt), evt.session_id, evt.session_turn_index)
     .run();
 }
 
@@ -97,9 +89,33 @@ export async function upsertUser(db: D1Database, evt: CleanEvent): Promise<void>
     .run();
 }
 
-export async function ingestBatch(db: D1Database, events: CleanEvent[]): Promise<void> {
-  for (const evt of events) {
-    await upsertEvent(db, evt);
+export type IngestOptions = {
+  sessionGapMs?: number;
+  /**
+   * Stamp chat turns for PostHog delivery (ms epoch of this ingest). Omit to
+   * store without queueing - the backfill does, so history stays out of
+   * PostHog.
+   */
+  posthogQueuedAt?: number;
+};
+
+/**
+ * Events are processed in timestamp order so a turn normally sees the turns
+ * before it already stored; insertTurn() still copes when it does not, but
+ * the in-order path is the cheap one. Session fields live in D1 only - they
+ * are not copied back onto the CleanEvents, because a later arrival can still
+ * change them (see sessions.ts).
+ */
+export async function ingestBatch(
+  db: D1Database,
+  events: CleanEvent[],
+  opts: IngestOptions = {}
+): Promise<void> {
+  const gapMs = opts.sessionGapMs ?? sessionGapMs(undefined);
+  const ordered = [...events].sort((a, b) => a.ts - b.ts);
+  for (const evt of ordered) {
+    if (isStitchable(evt)) await insertTurn(db, evt, gapMs, opts.posthogQueuedAt ?? null);
+    else await upsertEvent(db, evt);
     await upsertUser(db, evt);
   }
 }

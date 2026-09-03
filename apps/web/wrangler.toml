@@ -24,9 +24,17 @@ head_sampling_rate = 1
 # exactly. Per-env overrides repeat them so a deploy to a single env carries
 # its own trigger set.
 [triggers]
-crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *"]
+crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *", "* * * * *"]
 
 [vars]
+# Inactivity gap (minutes) between a user's turns before a new conversation starts.
+# WhatsApp replies can be slow; raise this per env without a code change.
+SESSION_GAP_MINUTES = "30"
+# PostHog ingest host. The key is a secret: `wrangler secret put POSTHOG_API_KEY --env <env>`.
+POSTHOG_HOST = "https://us.i.posthog.com"
+# Seconds a chat turn waits in D1 before its $ai_generation is sent, so a late
+# sibling can still re-stitch its session first (see ingest/posthog.ts).
+POSTHOG_SETTLE_SECONDS = "60"
 ENVIRONMENT = "development"
 TELEMETRY_EPOCH = "2026-04-24"
 CF_ACCOUNT_ID = "5a3ffd86280d3ed086be76d955829242"
@@ -51,6 +59,14 @@ migrations_dir = "migrations"
 name = "bt-servant-telemetry-dev"
 
 [env.dev.vars]
+# Inactivity gap (minutes) between a user's turns before a new conversation starts.
+# WhatsApp replies can be slow; raise this per env without a code change.
+SESSION_GAP_MINUTES = "30"
+# PostHog ingest host. The key is a secret: `wrangler secret put POSTHOG_API_KEY --env <env>`.
+POSTHOG_HOST = "https://us.i.posthog.com"
+# Seconds a chat turn waits in D1 before its $ai_generation is sent, so a late
+# sibling can still re-stitch its session first (see ingest/posthog.ts).
+POSTHOG_SETTLE_SECONDS = "60"
 ENVIRONMENT = "dev"
 TELEMETRY_EPOCH = "2026-04-24"
 CF_ACCOUNT_ID = "5a3ffd86280d3ed086be76d955829242"
@@ -62,7 +78,7 @@ enabled = true
 head_sampling_rate = 1
 
 [env.dev.triggers]
-crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *"]
+crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *", "* * * * *"]
 
 [[env.dev.d1_databases]]
 binding = "DB"
@@ -77,6 +93,14 @@ migrations_dir = "migrations"
 name = "bt-servant-telemetry-production"
 
 [env.production.vars]
+# Inactivity gap (minutes) between a user's turns before a new conversation starts.
+# WhatsApp replies can be slow; raise this per env without a code change.
+SESSION_GAP_MINUTES = "30"
+# PostHog ingest host. The key is a secret: `wrangler secret put POSTHOG_API_KEY --env <env>`.
+POSTHOG_HOST = "https://us.i.posthog.com"
+# Seconds a chat turn waits in D1 before its $ai_generation is sent, so a late
+# sibling can still re-stitch its session first (see ingest/posthog.ts).
+POSTHOG_SETTLE_SECONDS = "60"
 ENVIRONMENT = "production"
 TELEMETRY_EPOCH = "2026-04-24"
 CF_ACCOUNT_ID = "5a3ffd86280d3ed086be76d955829242"
@@ -88,7 +112,7 @@ enabled = true
 head_sampling_rate = 0.1
 
 [env.production.triggers]
-crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *"]
+crons = ["0 3 * * *", "0 9 * * *", "*/5 * * * *", "*/15 * * * *", "* * * * *"]
 
 [[env.production.d1_databases]]
 binding = "DB"

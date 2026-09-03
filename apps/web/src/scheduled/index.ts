@@ -1,11 +1,12 @@
 import type { BackfillEnv } from '../backfill/index.js';
+import { flushQueuedTurns, type PostHogEnv } from '../ingest/posthog.js';
 import { runAlertSweep } from './alerts.js';
 import { runDailyDigest } from './digest.js';
 import { runMilestoneWatch } from './milestones.js';
 import { runReconcile } from './reconcile.js';
 import { consoleSink, type PostIntent, type Sink } from './sink.js';
 
-export type ScheduledEnv = BackfillEnv;
+export type ScheduledEnv = BackfillEnv & PostHogEnv;
 
 // Cron pattern → job name. Kept here (rather than in wrangler.toml)
 // because the dispatcher needs to switch on it; wrangler.toml triggers
@@ -14,6 +15,7 @@ export const CRON_RECONCILE = '0 3 * * *';
 export const CRON_DIGEST = '0 9 * * *';
 export const CRON_ALERT_SWEEP = '*/5 * * * *';
 export const CRON_MILESTONE_WATCH = '*/15 * * * *';
+export const CRON_POSTHOG_FLUSH = '* * * * *';
 
 export type ScheduledOverrides = {
   sink?: Sink;
@@ -53,6 +55,11 @@ async function dispatch(
   if (cron === CRON_ALERT_SWEEP) {
     const { intents } = await runAlertSweep(env.DB, nowMs);
     return intents;
+  }
+  if (cron === CRON_POSTHOG_FLUSH) {
+    // The only PostHog sender. Posts nothing to Zulip.
+    await flushQueuedTurns(env.DB, env, nowMs);
+    return [];
   }
   if (cron === CRON_MILESTONE_WATCH) {
     const { intents } = await runMilestoneWatch(env.DB, nowMs);

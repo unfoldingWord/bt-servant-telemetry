@@ -1,4 +1,4 @@
-import { isKnownEvent, type CleanEvent } from '@bt-servant-telemetry/shared';
+import { isKnownEvent, type CleanEvent, type TurnFacts } from '@bt-servant-telemetry/shared';
 
 /**
  * The ingest boundary. Every log entry from bt-servant-worker passes through
@@ -48,6 +48,42 @@ function parseJsonObject(rawJson: string): Record<string, unknown> | null {
   }
 }
 
+/**
+ * Pull the per-turn LLM facts off a `chat_turn` payload.
+ *
+ * Unconditional by design: `asString`/`asNumber`/`asBool` each return null when
+ * the key is absent, so every other event type yields all-null turn facts
+ * without a branch — and adding an event that happens to carry one of these
+ * fields picks it up for free rather than silently dropping it.
+ */
+function extractTurnFacts(obj: Record<string, unknown>): TurnFacts {
+  return {
+    turn_id: asString(obj.turn_id),
+    mode: asString(obj.mode),
+    mode_switched_to: asString(obj.mode_switched_to),
+    language: asString(obj.language),
+    language_source: asString(obj.language_source),
+    response_language: asString(obj.response_language),
+    user_country: asString(obj.user_country),
+    edge_country: asString(obj.edge_country),
+    model: asString(obj.model),
+    iterations: asNumber(obj.iterations),
+    exit_reason: asString(obj.exit_reason),
+    stop_reason: asString(obj.stop_reason),
+    mcp_calls_made: asNumber(obj.mcp_calls_made),
+    input_tokens: asNumber(obj.input_tokens),
+    output_tokens: asNumber(obj.output_tokens),
+    cache_creation_input_tokens: asNumber(obj.cache_creation_input_tokens),
+    cache_read_input_tokens: asNumber(obj.cache_read_input_tokens),
+    billable_input_tokens: asNumber(obj.billable_input_tokens),
+    had_inbound_voice: asBool(obj.had_inbound_voice),
+    had_outbound_voice: asBool(obj.had_outbound_voice),
+    // Not on the wire. Derived during ingest by insertTurn() from prior turns.
+    session_id: null,
+    session_turn_index: null,
+  };
+}
+
 export async function redact(rawJson: string, salt: string): Promise<CleanEvent | null> {
   const obj = parseJsonObject(rawJson);
   if (!obj) return null;
@@ -93,5 +129,6 @@ export async function redact(rawJson: string, salt: string): Promise<CleanEvent 
     tool_name: asString(obj.tool_name),
     server_id: asString(obj.server_id),
     first_interaction: asBool(obj.first_interaction),
+    ...extractTurnFacts(obj),
   };
 }

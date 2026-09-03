@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { env, applyD1Migrations } from 'cloudflare:test';
-import type { CleanEvent } from '@bt-servant-telemetry/shared';
+import { NO_TURN_FACTS, type CleanEvent } from '@bt-servant-telemetry/shared';
 import { upsertUser, ingestBatch } from '../../src/ingest/upsert.js';
 
 declare module 'cloudflare:test' {
@@ -39,6 +39,7 @@ function makeEvent(overrides: Partial<CleanEvent> & Pick<CleanEvent, 'ts'>): Cle
     tool_name: null,
     server_id: null,
     first_interaction: null,
+    ...NO_TURN_FACTS,
     ...overrides,
   };
 }

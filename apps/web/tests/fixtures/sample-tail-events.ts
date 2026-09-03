@@ -22,20 +22,21 @@ export const sampleLogMessages = [
   '{"level":"error","event":"mcp_tool_call_error","request_id":"a991e72a-a86c-4d94-9cb6-b30a679bd8c9","server_id":"translation-helps","tool_name":"fetch_translation_word","args":{"word":"lampstand"},"error":"MCP error: Missing required parameter: path (code: -32000)","stack":"MCPError: MCP error: Missing required parameter: path (code: -32000)\\n    at parseJsonRpcResponse (index.js:4530:13)","timestamp":1777056469074,"duration_ms":15}',
   '{"level":"error","event":"mcp_tool_call_error","request_id":"8b313643-4df7-4ada-a961-7f61dc52d2fc","server_id":"translation-helps","tool_name":"fetch_translation_notes","args":{"book":"GEN","chapter":4,"verse":1,"verse_end":8},"error":"MCP error: Missing required parameter: reference (code: -32000)","stack":"MCPError: MCP error: Missing required parameter: reference (code: -32000)\\n    at parseJsonRpcResponse (index.js:4530:13)","timestamp":1777047892318,"duration_ms":17}',
   '{"level":"error","event":"code_execution_error","request_id":"13db13f7-b908-44e1-a21f-cd4c6884b20b","code":"[REDACTED]","error":"\'read_memory\' is not defined","stack":"CodeExecutionError: \'read_memory\' is not defined\\n    at checkExecutionError (index.js:10362:11)","timestamp":1776708516168,"duration_ms":0,"mcp_calls_made":0,"mcp_calls_limit":10}',
+  '{"event":"chat_turn","request_id":"0346f872-6bfe-4e13-8706-b327155646ed","timestamp":1788317687248,"turn_id":"7ca7aedd-cc08-494d-9102-a1277a0f2775","user_id":"15551234567","org":"unfoldingWord","client_id":"whatsapp","transport":"callback","chat_type":"private","response_language":"en","user_country":"US","edge_country":"US","mode":"local-test","mode_switched_to":null,"language":null,"language_source":"none","model":"claude-sonnet-4-6","iterations":1,"exit_reason":"done","stop_reason":"end_turn","mcp_calls_made":0,"input_tokens":3,"output_tokens":18,"cache_creation_input_tokens":3507,"cache_read_input_tokens":0,"billable_input_tokens":4387,"duration_ms":1726,"had_inbound_voice":false,"had_outbound_voice":false}',
 ];
 
 /**
  * Wrap each raw JSON message into a TraceItem so it can be passed to
  * `tailHandler` directly.
  */
-export function buildTraceItems(): TraceItem[] {
+export function buildTraceItems(messages: string[] = sampleLogMessages): TraceItem[] {
   return [
     {
       scriptName: 'bt-servant-worker',
       outcome: 'ok',
       eventTimestamp: Date.now(),
       event: null,
-      logs: sampleLogMessages.map((message) => ({
+      logs: messages.map((message) => ({
         message: [message],
         level: 'log',
         timestamp: Date.now(),

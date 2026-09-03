@@ -1,4 +1,4 @@
-import type { CleanEvent } from '@bt-servant-telemetry/shared';
+import { NO_TURN_FACTS, type CleanEvent } from '@bt-servant-telemetry/shared';
 
 /**
  * Dev seed — generates synthetic telemetry that exercises every metric
@@ -176,6 +176,8 @@ function eventOf(opts: EventOpts): CleanEvent {
     tool_name: null,
     server_id: null,
     first_interaction: null,
+    // Seed data models channel activity, not LLM turns — no chat_turn rows.
+    ...NO_TURN_FACTS,
   };
 }
 
