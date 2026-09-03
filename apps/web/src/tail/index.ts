@@ -1,8 +1,9 @@
 import { redact } from '../ingest/redact.js';
 import { ingestBatch } from '../ingest/upsert.js';
+import { emitTurnsToPostHog, type PostHogEnv } from '../ingest/posthog.js';
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
 
-type Env = {
+type Env = PostHogEnv & {
   DB: D1Database;
   PII_HASH_SALT: string;
 };
@@ -35,11 +36,13 @@ async function redactAll(rawMessages: string[], salt: string): Promise<CleanEven
 export async function tailHandler(
   events: TraceItem[],
   env: Env,
-  _ctx: ExecutionContext
+  ctx: ExecutionContext
 ): Promise<void> {
   const rawMessages = extractLogStrings(events);
   if (rawMessages.length === 0) return;
   const clean = await redactAll(rawMessages, env.PII_HASH_SALT);
   if (clean.length === 0) return;
+  // D1 first: it is the durable record. PostHog is best-effort and fails open.
   await ingestBatch(env.DB, clean);
+  await emitTurnsToPostHog(clean, env, ctx);
 }

@@ -26,6 +26,10 @@ type Env = {
   ZULIP_BOT_TOKEN?: string;
   ZULIP_STREAM?: string;
   ZULIP_TOPIC?: string;
+  // PostHog AI observability. Key is a per-env secret; host is a var.
+  // Both optional: unset => the tail handler skips PostHog entirely.
+  POSTHOG_API_KEY?: string;
+  POSTHOG_HOST?: string;
   // SvelteKit static dashboard, served via Workers static assets binding.
   // Optional so vitest-pool-workers integration tests (which don't ship
   // the dashboard build) still run.
