@@ -1,5 +1,6 @@
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
-import { assignSession, sessionGapMs } from './sessions.js';
+import { FACT_COLUMNS, FACT_COLUMN_LIST, FACT_PLACEHOLDERS, factValues } from './event-row.js';
+import { insertTurn, isStitchable, sessionGapMs } from './sessions.js';
 
 /**
  * D1 writes for a CleanEvent batch. All writes are idempotent and
@@ -18,52 +19,24 @@ import { assignSession, sessionGapMs } from './sessions.js';
  * `redact()` — there is no PII check here.
  */
 
-/** SQLite has no boolean type; store as 0/1 and preserve null. */
-function boolToInt(value: boolean | null): number | null {
-  return value === null ? null : value ? 1 : 0;
-}
-
 function utcDayKey(ts: number): number {
   const d = new Date(ts);
   return d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate();
 }
 
 /**
- * Positional bind values for the events INSERT.
- *
- * Extracted so the column list and the value list sit next to each other and
- * stay the same length — a transposed or missing value here writes the wrong
- * column with no error, which is the failure mode a wide INSERT invites.
+ * Plain events (and chat turns that cannot be stitched) carry whatever
+ * session fields they arrived with - null, in practice. Stitchable chat turns
+ * go through insertTurn() instead, which derives the session in-statement.
  */
-function eventBindValues(evt: CleanEvent): unknown[] {
-  return [
-    evt.request_id, evt.event, evt.ts, evt.level, evt.org, evt.user_hash, evt.client_id,
-    evt.total_ms, evt.duration_ms, evt.chat_type, evt.transport, evt.tool_name, evt.server_id,
-    evt.turn_id, evt.mode, evt.mode_switched_to, evt.language, evt.language_source,
-    evt.response_language, evt.user_country, evt.edge_country, evt.model, evt.iterations,
-    evt.exit_reason, evt.stop_reason, evt.mcp_calls_made, evt.input_tokens, evt.output_tokens,
-    evt.cache_creation_input_tokens, evt.cache_read_input_tokens, evt.billable_input_tokens,
-    boolToInt(evt.had_inbound_voice), boolToInt(evt.had_outbound_voice),
-    evt.session_id, evt.session_turn_index,
-  ];
-}
-
 export async function upsertEvent(db: D1Database, evt: CleanEvent): Promise<void> {
+  const n = FACT_COLUMNS.length;
   await db
     .prepare(
-      `INSERT OR IGNORE INTO events
-        (request_id, event, ts, level, org, user_hash, client_id,
-         total_ms, duration_ms, chat_type, transport, tool_name, server_id,
-         turn_id, mode, mode_switched_to, language, language_source,
-         response_language, user_country, edge_country, model, iterations,
-         exit_reason, stop_reason, mcp_calls_made, input_tokens, output_tokens,
-         cache_creation_input_tokens, cache_read_input_tokens,
-         billable_input_tokens, had_inbound_voice, had_outbound_voice,
-         session_id, session_turn_index)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT OR IGNORE INTO events (${FACT_COLUMN_LIST}, session_id, session_turn_index)
+       VALUES (${FACT_PLACEHOLDERS}, ?${n + 1}, ?${n + 2})`
     )
-    .bind(...eventBindValues(evt))
+    .bind(...factValues(evt), evt.session_id, evt.session_turn_index)
     .run();
 }
 
@@ -119,11 +92,11 @@ export async function upsertUser(db: D1Database, evt: CleanEvent): Promise<void>
 export type IngestOptions = { sessionGapMs?: number };
 
 /**
- * Events are processed in timestamp order so a turn always sees the turns
- * before it - that is what lets assignSession() stitch consecutive turns in
- * the same batch. Session fields are assigned IN PLACE on the CleanEvent, so
- * the caller's objects carry them onward (the tail handler forwards the same
- * array to PostHog).
+ * Events are processed in timestamp order so a turn normally sees the turns
+ * before it already stored; insertTurn() still copes when it does not, but
+ * the in-order path is the cheap one. Session fields are assigned IN PLACE on
+ * the CleanEvent, so the caller's objects carry them onward (the tail handler
+ * forwards the same array to PostHog).
  */
 export async function ingestBatch(
   db: D1Database,
@@ -133,8 +106,8 @@ export async function ingestBatch(
   const gapMs = opts.sessionGapMs ?? sessionGapMs(undefined);
   const ordered = [...events].sort((a, b) => a.ts - b.ts);
   for (const evt of ordered) {
-    await assignSession(db, evt, gapMs);
-    await upsertEvent(db, evt);
+    if (isStitchable(evt)) await insertTurn(db, evt, gapMs);
+    else await upsertEvent(db, evt);
     await upsertUser(db, evt);
   }
 }

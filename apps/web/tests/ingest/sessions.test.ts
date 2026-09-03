@@ -112,12 +112,75 @@ describe('session stitching', () => {
     expect(b.session_turn_index).toBe(2);
   });
 
+  it('places a late turn after its chronological predecessor, not the newest row', async () => {
+    // Persisted: a at t=0, b at t=100m (its own session). A late t=10m turn
+    // must join a's session, not compare itself against b and start a third.
+    await ingestBatch(env.DB, [await turn('a', T0)]);
+    await ingestBatch(env.DB, [await turn('b', T0 + 100 * MIN)]);
+    const late = await turn('late', T0 + 10 * MIN);
+    await ingestBatch(env.DB, [late]);
+
+    expect(late.session_id).toBe('a');
+    expect(late.session_turn_index).toBe(2);
+    expect(await stored('b')).toEqual({ session_id: 'b', session_turn_index: 1 });
+  });
+
+  it('recomputes already-stored successors when a late turn bridges a gap', async () => {
+    // a at 0 and c at 40m were stored as separate sessions (40m > 30m gap).
+    // A late b at 20m sits within the gap of both, so c now belongs to a.
+    await ingestBatch(env.DB, [await turn('a', T0)]);
+    await ingestBatch(env.DB, [await turn('c', T0 + 40 * MIN)]);
+    expect((await stored('c')).session_id).toBe('c');
+
+    await ingestBatch(env.DB, [await turn('b', T0 + 20 * MIN)]);
+
+    expect(await stored('a')).toEqual({ session_id: 'a', session_turn_index: 1 });
+    expect(await stored('b')).toEqual({ session_id: 'a', session_turn_index: 2 });
+    expect(await stored('c')).toEqual({ session_id: 'a', session_turn_index: 3 });
+  });
+
+  it('recomputes the whole chain after a late turn, including a later new session', async () => {
+    // Newer page ingested before the older one (page-by-page backfill).
+    // Truth in time: a(0) b(10m) c(20m) | d(80m) e(85m).
+    const later = [
+      await turn('c', T0 + 20 * MIN),
+      await turn('d', T0 + 80 * MIN),
+      await turn('e', T0 + 85 * MIN),
+    ];
+    await ingestBatch(env.DB, later);
+    await ingestBatch(env.DB, [await turn('a', T0), await turn('b', T0 + 10 * MIN)]);
+
+    expect(await stored('a')).toEqual({ session_id: 'a', session_turn_index: 1 });
+    expect(await stored('b')).toEqual({ session_id: 'a', session_turn_index: 2 });
+    expect(await stored('c')).toEqual({ session_id: 'a', session_turn_index: 3 });
+    expect(await stored('d')).toEqual({ session_id: 'd', session_turn_index: 1 });
+    expect(await stored('e')).toEqual({ session_id: 'd', session_turn_index: 2 });
+  });
+
+  it('never hands two concurrent turns the same session_turn_index', async () => {
+    await ingestBatch(env.DB, [await turn('a', T0)]);
+    const turns = await Promise.all(
+      Array.from({ length: 6 }, (_, i) => turn(`t${i}`, T0 + (i + 1) * MIN))
+    );
+    // Separate invocations racing for the same user: each is a separate batch.
+    await Promise.all(turns.map((t) => ingestBatch(env.DB, [t])));
+
+    const rows = await env.DB.prepare(
+      `SELECT session_id, session_turn_index FROM events
+        WHERE event = 'chat_turn' ORDER BY session_turn_index`
+    ).all<{ session_id: string; session_turn_index: number }>();
+    expect(rows.results.map((r) => r.session_id)).toEqual(Array(7).fill('a'));
+    expect(rows.results.map((r) => r.session_turn_index)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
   it('is idempotent under a replayed delivery', async () => {
     const a = await turn('a', T0);
     await ingestBatch(env.DB, [a]);
     await ingestBatch(env.DB, [await turn('a', T0)]); // same turn again
 
-    const rows = await env.DB.prepare(`SELECT COUNT(*) AS n FROM events WHERE turn_id = 'a'`).first<{ n: number }>();
+    const rows = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM events WHERE turn_id = 'a'`
+    ).first<{ n: number }>();
     expect(rows?.n).toBe(1);
     expect((await stored('a')).session_id).toBe('a');
   });
