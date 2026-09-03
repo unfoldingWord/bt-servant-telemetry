@@ -54,6 +54,13 @@ export function posthogSettleMs(raw: string | undefined): number {
 /** Turns claimed per flush. Bounds one invocation's work; the rest wait for the next. */
 export const FLUSH_LIMIT = 200;
 
+/**
+ * How long a claim is honoured before another flush may take the row over.
+ * Must outlast the slowest honest flush: posthog-node's shutdown() gives up
+ * after 30s. Five minutes also matches the cron tick that drains stragglers.
+ */
+export const CLAIM_LEASE_MS = 5 * 60_000;
+
 /** Anthropic reports these as `number | null`; PostHog wants numbers or nothing. */
 function num(value: number | null): number | undefined {
   return value === null ? undefined : value;
@@ -138,23 +145,34 @@ function createClient(env: PostHogEnv): PostHog | null {
 }
 
 /**
- * Atomically take ownership of up to FLUSH_LIMIT settled, unsent turns. One
- * statement, so two invocations flushing at once get disjoint rows. Rows are
- * returned with the session D1 holds NOW, which is the whole point.
+ * Atomically LEASE up to FLUSH_LIMIT settled, unsent turns: one statement, so
+ * two invocations flushing at once get disjoint rows. A row is eligible when
+ * it has settled and either nobody holds it or the holder's lease has
+ * expired - a Worker that was terminated, timed out or crashed mid-flush
+ * leaves its lease behind, and this is what gets those rows sent after all.
+ * Rows come back with the session D1 holds NOW, which is the whole point.
+ *
+ * Binds: ?1 now, ?2 settle cutoff (queued at or before), ?3 lease cutoff
+ * (claimed at or before = expired).
  */
 const CLAIM_SETTLED = `
-  UPDATE events SET posthog_emitted_at = ?1
+  UPDATE events SET posthog_claimed_at = ?1
    WHERE rowid IN (
      SELECT rowid FROM events
       WHERE posthog_queued_at IS NOT NULL AND posthog_emitted_at IS NULL
         AND posthog_queued_at <= ?2
+        AND (posthog_claimed_at IS NULL OR posthog_claimed_at <= ?3)
         AND event = 'chat_turn' AND user_hash IS NOT NULL AND turn_id IS NOT NULL
       ORDER BY posthog_queued_at, ts
       LIMIT ${FLUSH_LIMIT})
    RETURNING ${EVENT_COLUMN_LIST}`;
 
-/** Hand claimed turns back to the queue so the next flush retries them. */
-const RELEASE = `UPDATE events SET posthog_emitted_at = NULL
+/** Final marker, written only once PostHog has accepted the batch. */
+const MARK_EMITTED = `UPDATE events SET posthog_emitted_at = ?1
+  WHERE request_id = ?2 AND event = 'chat_turn' AND ts = ?3`;
+
+/** Give a lease back early so the next flush retries without waiting it out. */
+const RELEASE = `UPDATE events SET posthog_claimed_at = NULL
   WHERE request_id = ?1 AND event = 'chat_turn' AND ts = ?2`;
 
 function warn(event: string, turns: number, error: unknown): void {
@@ -174,9 +192,11 @@ function warn(event: string, turns: number, error: unknown): void {
  * traffic still drains.
  *
  * Fails OPEN with respect to ingest: D1 is the durable record and has already
- * been written. But delivery itself is at-least-once: a turn whose send
- * fails is released back to the queue and retried by a later flush, and
- * `turn_id` as the event uuid makes a duplicate send idempotent in PostHog.
+ * been written. But delivery itself is at-least-once: a turn is marked
+ * emitted only after PostHog accepts it; a send that fails is released at
+ * once, and one whose invocation died is reclaimed when its lease expires.
+ * `turn_id` as the event uuid makes the resulting duplicate sends - a crash
+ * after acceptance but before the marker - idempotent in PostHog.
  *
  * Returns the number of turns handed to the client, for tests and logs.
  */
@@ -190,7 +210,7 @@ export async function flushQueuedTurns(
 
   const claimed = await db
     .prepare(CLAIM_SETTLED)
-    .bind(nowMs, nowMs - posthogSettleMs(env.POSTHOG_SETTLE_SECONDS))
+    .bind(nowMs, nowMs - posthogSettleMs(env.POSTHOG_SETTLE_SECONDS), nowMs - CLAIM_LEASE_MS)
     .all<EventRow>();
   const turns = claimed.results.map(rowToCleanEvent);
   if (turns.length === 0) return 0;
@@ -219,6 +239,9 @@ export async function flushQueuedTurns(
     }
     await client.shutdown();
     if (failure !== null) throw failure;
+    await db.batch(
+      turns.map((evt) => db.prepare(MARK_EMITTED).bind(nowMs, evt.request_id, evt.ts))
+    );
     return turns.length;
   } catch (error) {
     warn('posthog_emit_failed', turns.length, error);

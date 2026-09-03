@@ -9,9 +9,14 @@
 --
 -- NULL posthog_queued_at means "never queued": rows ingested before this
 -- migration, and rows written by the backfill, are not sent to PostHog.
+--
+-- A flush takes a LEASE (posthog_claimed_at) before sending and writes the
+-- final marker (posthog_emitted_at) only after PostHog accepts. A lease left
+-- behind by a terminated invocation expires and the row is claimed again.
 
 ALTER TABLE events ADD COLUMN posthog_queued_at INTEGER;  -- ms epoch; set by tail ingest
-ALTER TABLE events ADD COLUMN posthog_emitted_at INTEGER; -- ms epoch; set when claimed for emission
+ALTER TABLE events ADD COLUMN posthog_claimed_at INTEGER; -- ms epoch; lease taken by an in-flight flush
+ALTER TABLE events ADD COLUMN posthog_emitted_at INTEGER; -- ms epoch; set once PostHog accepted the event
 
 -- The flush scans only the pending tail of the queue.
 CREATE INDEX events_posthog_pending_idx ON events (posthog_queued_at)

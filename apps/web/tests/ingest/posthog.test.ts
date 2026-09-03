@@ -24,7 +24,11 @@ import {
   scheduledHandler,
   type ScheduledEnv,
 } from '../../src/scheduled/index.js';
-import { flushQueuedTurns, toGenerationProperties } from '../../src/ingest/posthog.js';
+import {
+  CLAIM_LEASE_MS,
+  flushQueuedTurns,
+  toGenerationProperties,
+} from '../../src/ingest/posthog.js';
 import { redact } from '../../src/ingest/redact.js';
 import { buildTraceItems, sampleLogMessages } from '../fixtures/sample-tail-events.js';
 
@@ -206,10 +210,15 @@ describe('tail handler -> PostHog', () => {
     await runTail(withPostHog);
 
     const row = await env.DB.prepare(
-      `SELECT turn_id, posthog_emitted_at FROM events WHERE event = 'chat_turn'`
-    ).first<{ turn_id: string; posthog_emitted_at: number | null }>();
+      `SELECT turn_id, posthog_claimed_at, posthog_emitted_at FROM events WHERE event = 'chat_turn'`
+    ).first<{
+      turn_id: string;
+      posthog_claimed_at: number | null;
+      posthog_emitted_at: number | null;
+    }>();
     expect(row?.turn_id).toBe('7ca7aedd-cc08-494d-9102-a1277a0f2775');
-    // the failed turn went back on the queue for a later flush to retry
+    // the failed turn's lease was released so the next flush retries at once
+    expect(row?.posthog_claimed_at).toBeNull();
     expect(row?.posthog_emitted_at).toBeNull();
     // and the failure was observable, not swallowed
     const msgs = [...warn.mock.calls, ...err.mock.calls].map((c) => c.map(String).join(' '));
@@ -275,6 +284,48 @@ describe('settled delivery', () => {
       names.map((n) => [n, gens.find((g) => g.uuid === U(n))?.index])
     );
     expect(indexByName).toEqual({ t1: 2, t2: 3, t3: 4, t4: 5, t5: 6, t6: 7 });
+  });
+
+  it('marks a turn emitted only after PostHog accepts it, then never resends', async () => {
+    const seen = stubPostHogFetch();
+    await runTailAt(withSettle, [turnMessage('a', NOW)], NOW);
+    const before = await env.DB.prepare(
+      `SELECT posthog_claimed_at, posthog_emitted_at FROM events WHERE event = 'chat_turn'`
+    ).first<{ posthog_claimed_at: number | null; posthog_emitted_at: number | null }>();
+    expect(before).toEqual({ posthog_claimed_at: null, posthog_emitted_at: null });
+
+    await flushQueuedTurns(env.DB, withSettle, NOW + 61_000);
+    const after = await env.DB.prepare(
+      `SELECT posthog_claimed_at, posthog_emitted_at FROM events WHERE event = 'chat_turn'`
+    ).first<{ posthog_claimed_at: number | null; posthog_emitted_at: number | null }>();
+    expect(after).toEqual({ posthog_claimed_at: NOW + 61_000, posthog_emitted_at: NOW + 61_000 });
+
+    // Emitted is final: a much later flush leaves it alone.
+    await flushQueuedTurns(env.DB, withSettle, NOW + CLAIM_LEASE_MS * 10);
+    expect(generationsFrom(seen).map((g) => g.uuid)).toEqual([U('a')]);
+  });
+
+  it('recovers a claim abandoned by a terminated invocation once its lease expires', async () => {
+    const seen = stubPostHogFetch();
+    await runTailAt(withSettle, [turnMessage('a', NOW)], NOW);
+    // An invocation leased the row and then died before PostHog answered:
+    // the lease is set, the emitted marker is not, and nobody will release it.
+    const crashedAt = NOW + 61_000;
+    await env.DB.prepare(`UPDATE events SET posthog_claimed_at = ?1 WHERE event = 'chat_turn'`)
+      .bind(crashedAt)
+      .run();
+
+    // While the lease is live, other flushes leave the row to its holder.
+    expect(await flushQueuedTurns(env.DB, withSettle, crashedAt + CLAIM_LEASE_MS - 1)).toBe(0);
+    expect(generationsFrom(seen)).toHaveLength(0);
+
+    // Once it expires, the row is claimed again and finally sent.
+    expect(await flushQueuedTurns(env.DB, withSettle, crashedAt + CLAIM_LEASE_MS)).toBe(1);
+    expect(generationsFrom(seen).map((g) => g.uuid)).toEqual([U('a')]);
+    const row = await env.DB.prepare(
+      `SELECT posthog_emitted_at FROM events WHERE event = 'chat_turn'`
+    ).first<{ posthog_emitted_at: number | null }>();
+    expect(row?.posthog_emitted_at).toBe(crashedAt + CLAIM_LEASE_MS);
   });
 
   it('claims each queued turn exactly once across concurrent flushes', async () => {
