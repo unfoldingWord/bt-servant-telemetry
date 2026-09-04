@@ -4,13 +4,13 @@ import { sessionGapMs } from '../ingest/sessions.js';
 import { scrubConversation, type ScrubEnv } from '../ingest/scrub.js';
 import {
   extractConversationText,
-  loadSpoolSkips,
+  loadSettledText,
   spoolScrubbedText,
   TEXT_STATUS,
   warnTextDropped,
   type ConversationText,
+  type SettledText,
   type SpooledText,
-  type SpoolSkip,
 } from '../ingest/text.js';
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
 
@@ -51,22 +51,23 @@ async function redactAll(rawMessages: string[], salt: string): Promise<CleanEven
  * the scrubbed row to spool, or null when nothing may be spooled. The raw
  * text is only ever held in this function's arguments.
  *
- * `skip` is set when D1 says this turn has been here before — a redelivered
- * tail batch. Either answer means the scrubber must not run again: the words
- * are already spooled, or the turn is already in PostHog and its text gone.
+ * `settled` holds D1's existing decision for this turn — a redelivered tail
+ * batch. That decision is final (the events insert is `INSERT OR IGNORE`, so
+ * nothing here could change it anyway); the event carries it forward and the
+ * scrubber does not run a second time on the same words.
  */
 async function scrubTurn(
   evt: CleanEvent,
   text: ConversationText | undefined,
-  skip: SpoolSkip | undefined,
+  settled: SettledText | undefined,
   env: ScrubEnv
 ): Promise<SpooledText | null> {
   if (!text) {
     evt.text_status = TEXT_STATUS.off;
     return null;
   }
-  if (skip !== undefined) {
-    evt.text_status = skip === 'emitted' ? TEXT_STATUS.alreadyEmitted : TEXT_STATUS.scrubbed;
+  if (settled) {
+    evt.text_status = settled.status;
     return null;
   }
   if (text.userMessage.trim() === '' && text.assistantReply.trim() === '') {
@@ -101,13 +102,13 @@ async function prepareConversationText(
     if (text) texts.set(text.turnId, text);
   }
   const turns = clean.filter((evt) => evt.event === 'chat_turn' && evt.turn_id !== null);
-  const skips = await loadSpoolSkips(
+  const settled = await loadSettledText(
     db,
     turns.map((evt) => evt.turn_id as string)
   );
   const rows = await Promise.all(
     turns.map((evt) =>
-      scrubTurn(evt, texts.get(evt.turn_id as string), skips.get(evt.turn_id as string), env)
+      scrubTurn(evt, texts.get(evt.turn_id as string), settled.get(evt.turn_id as string), env)
     )
   );
   return rows.filter((row): row is SpooledText => row !== null);
@@ -130,11 +131,11 @@ export async function tailHandler(
   const clean = await redactAll(rawMessages, env.PII_HASH_SALT);
   if (clean.length === 0) return;
   // Conversation text is scrubbed here, before anything touches D1, and only
-  // the scrubbed text is spooled for the sender. A redelivered batch whose
-  // turns D1 has already settled is skipped rather than re-scrubbed, and the
-  // insert itself refuses a turn PostHog already has, so the spool cannot
-  // outlive its turn. Anything nobody sends is swept after a day
-  // (ingest/text.ts).
+  // the scrubbed text is spooled for the sender. A turn's text is decided once:
+  // a redelivered batch carries D1's existing decision forward instead of
+  // re-scrubbing, and the insert itself refuses any turn already stored, so a
+  // replay can neither contradict that decision nor revive text D1 has let go.
+  // Anything nobody sends is swept after a day (ingest/text.ts).
   const spool = await prepareConversationText(env.DB, clean, rawMessages, env);
   await spoolScrubbedText(env.DB, spool, nowMs);
   // D1 is the durable record. Chat turns are stamped for PostHog here and

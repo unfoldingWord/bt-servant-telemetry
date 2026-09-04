@@ -6,9 +6,10 @@
 -- scrubbed text here until the once-a-minute PostHog cron has sent the turn's
 -- $ai_generation (ingest/posthog.ts). The sender deletes the row on acceptance
 -- and sweeps anything older than a day, so this table is a short queue, never
--- an archive; the insert itself refuses a turn whose event is already emitted,
--- so a redelivered tail batch cannot resurrect text nobody will collect. Raw
--- (unscrubbed) text is never stored anywhere in this database.
+-- an archive; the insert itself refuses any turn already in events, so a
+-- redelivered tail batch can neither resurrect text nobody will collect nor
+-- revive a conversation the sweep has dropped. Raw (unscrubbed) text is never
+-- stored anywhere in this database.
 
 CREATE TABLE turn_text (
   turn_id TEXT PRIMARY KEY,
@@ -25,5 +26,8 @@ CREATE INDEX turn_text_created_idx ON turn_text (created_at);
 --   scrub_unavailable  no ANTHROPIC_API_KEY on this worker; text dropped
 --   scrub_failed       the scrubber errored or answered implausibly; text dropped
 --   spool_expired      spooled, but unsent for a day; the sweep dropped the text
---   already_emitted    a redelivered batch for a turn PostHog already has
+--
+-- Written once, on the delivery that stores the turn: the events insert is
+-- INSERT OR IGNORE, so a redelivered tail batch carries this value forward
+-- rather than deciding again.
 ALTER TABLE events ADD COLUMN text_status TEXT;

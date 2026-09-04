@@ -180,6 +180,13 @@ function propsOf(seen: Captured[]): Record<string, unknown> {
   return g.properties as Record<string, unknown>;
 }
 
+/** How many times the scrubber has been called through the stubbed fetch. */
+function scrubCalls(): number {
+  return (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter((c) =>
+    String(c[0]).startsWith(ANTHROPIC_HOST)
+  ).length;
+}
+
 async function spooledCount(): Promise<number> {
   const row = await env.DB.prepare('SELECT count(*) AS n FROM turn_text').first<{ n: number }>();
   return row?.n ?? -1;
@@ -504,10 +511,6 @@ describe('conversation text', () => {
     // Cloudflare redelivers the same tail batch. The turn is already in
     // PostHog and its text deleted; nothing may recreate a row no sender will
     // ever select, and the scrubber must not be paid for a second time.
-    const scrubCalls = (): number =>
-      (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter((c) =>
-        String(c[0]).startsWith(ANTHROPIC_HOST)
-      ).length;
     const before = scrubCalls();
     expect(before).toBeGreaterThan(0); // the first pass really did call the scrubber
     await runTailAt(withText, batch, NOW + MIN);
@@ -527,15 +530,37 @@ describe('conversation text', () => {
     await runTailAt(withText, batch, NOW);
     expect(await spooledCount()).toBe(1);
 
-    const scrubCalls = (): number =>
-      (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter((c) =>
-        String(c[0]).startsWith(ANTHROPIC_HOST)
-      ).length;
     const before = scrubCalls();
     expect(before).toBeGreaterThan(0);
     await runTailAt(withText, batch, NOW + 1000); // redelivered before the sender ran
     expect(scrubCalls()).toBe(before);
     expect(await spooledCount()).toBe(1);
+  });
+
+  it('does not revive text for a turn whose spool already expired', async () => {
+    // The outage runs past the retention window and the tail batch is then
+    // redelivered. `spool_expired` is the turn's final word: a replay must not
+    // re-scrub, must not put the conversation back in D1 for another day, and
+    // must not end up attaching text to a turn that says it lost it.
+    const seen = stubPostHogFetch();
+    const batch = [textTurn('j', NOW - MIN)];
+    await runTailAt(withText, batch, NOW);
+    const before = scrubCalls();
+    expect(before).toBeGreaterThan(0);
+
+    const DAY = 24 * 60 * MIN;
+    await flushQueuedTurns(env.DB, env as PostHogEnv, NOW + DAY + MIN); // no key: sweep only
+    expect(await spooledCount()).toBe(0);
+
+    await runTailAt(withText, batch, NOW + DAY + 2 * MIN);
+    expect(scrubCalls()).toBe(before);
+    expect(await spooledCount()).toBe(0);
+
+    await flushQueuedTurns(env.DB, withText, NOW + DAY + 3 * MIN);
+    const p = propsOf(seen);
+    expect(p.text_status).toBe('spool_expired');
+    expect(p).not.toHaveProperty('$ai_input');
+    expect(p).not.toHaveProperty('$ai_output_choices');
   });
 
   it('sweeps spooled text that was never sent after a day, even with no PostHog key', async () => {

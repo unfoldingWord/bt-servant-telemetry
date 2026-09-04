@@ -30,12 +30,6 @@ export const TEXT_STATUS = {
    * keeps it from claiming `scrubbed` when the words are already gone.
    */
   spoolExpired: 'spool_expired',
-  /**
-   * A redelivered tail batch whose turn PostHog already has. Its text was
-   * settled the first time round; re-scrubbing would buy a second Anthropic
-   * call and a spooled row no sender would ever collect.
-   */
-  alreadyEmitted: 'already_emitted',
 } as const;
 export type TextStatus = (typeof TEXT_STATUS)[keyof typeof TEXT_STATUS];
 
@@ -73,21 +67,22 @@ export function warnTextDropped(evt: CleanEvent, status: TextStatus, detail?: st
 export type SpooledText = { turn_id: string; user_message: string; assistant_reply: string };
 
 /**
- * Spool a turn's text ONLY while that turn is still owed to PostHog.
+ * Spool a turn's text ONLY on the delivery that first stores the turn.
  *
  * The guard is what makes the table a queue rather than a leak. Tail
  * deliveries are replayable and the events insert is `INSERT OR IGNORE`, so a
- * batch can arrive whose turn was emitted (and whose text deleted) minutes
- * ago; without the `NOT EXISTS` an insert here would create a row no sender
- * can ever select, and it would sit in D1 until the daily sweep. A turn with
- * no event row yet — the normal case, since the spool is written before
- * ingest — has nothing emitted and so passes.
+ * redelivery cannot change the stored turn's `text_status` — which means the
+ * status it already carries is the final word on that turn's text, and a
+ * second spool row could only contradict it: attaching `$ai_input` to a turn
+ * that says `spool_expired`, or reviving a conversation the retention sweep
+ * has already dropped for another day. An existing event row of any kind is
+ * therefore a stop sign. A turn with none — the normal case, since the spool
+ * is written before ingest — passes.
  */
 const INSERT_TEXT = `INSERT OR REPLACE INTO turn_text (turn_id, user_message, assistant_reply, created_at)
   SELECT ?1, ?2, ?3, ?4
    WHERE NOT EXISTS (
-     SELECT 1 FROM events
-      WHERE turn_id = ?1 AND event = 'chat_turn' AND posthog_emitted_at IS NOT NULL
+     SELECT 1 FROM events WHERE turn_id = ?1 AND event = 'chat_turn'
    )`;
 
 /** Write scrubbed text for the sender to pick up. No-op for an empty batch. */
@@ -108,43 +103,50 @@ export async function spoolScrubbedText(
 const IN_CHUNK = 50;
 
 /**
- * Why a turn in an incoming batch needs no scrubbing:
- *   emitted  PostHog already has the turn; its text is settled and deleted.
- *   spooled  scrubbed text is already waiting for the sender.
+ * D1's standing answer for one turn. Wrapped rather than bare so that "no
+ * decision" (absent from the map) cannot be confused with a decision of null —
+ * a chat_turn stored before this feature shipped.
  */
-export type SpoolSkip = 'emitted' | 'spooled';
+export type SettledText = { status: TextStatus | null };
 
 /**
- * Which of these turns tail ingest must NOT scrub again, and why.
+ * The text decision D1 already holds for each of these turns, keyed by
+ * turn_id. A turn absent from the map has never been here.
  *
- * Cloudflare can redeliver a tail batch, and both destinations are idempotent
- * by design (`INSERT OR IGNORE` on events, `turn_id` as the PostHog event
- * uuid) — but the scrubber is not: a second pass is a second Anthropic call on
- * the same words. Worse, spooling after emission writes a row the sender will
- * never look at again. One indexed lookup per batch closes both.
+ * A turn's text is decided ONCE, on the delivery that stores it. Cloudflare
+ * can redeliver a tail batch, and the events insert is `INSERT OR IGNORE`, so
+ * a later pass cannot change the stored `text_status` — only contradict it.
+ * Reprocessing would also pay Anthropic a second time for the same words, and,
+ * after the retention sweep has expired a turn, would put that conversation
+ * back in D1 for another day. So the stored decision wins, whatever it says,
+ * and this is the one indexed lookup per batch that surfaces it.
+ *
+ * Two places hold a decision, and they are checked together because either can
+ * exist without the other: the `events` row is authoritative, and a spool row
+ * with no event row is the delivery that spooled and then died before ingest —
+ * its text is already scrubbed and waiting, so that turn is settled too.
  */
-export async function loadSpoolSkips(
+export async function loadSettledText(
   db: D1Database,
   turnIds: string[]
-): Promise<Map<string, SpoolSkip>> {
-  const out = new Map<string, SpoolSkip>();
+): Promise<Map<string, SettledText>> {
+  const out = new Map<string, SettledText>();
   for (let i = 0; i < turnIds.length; i += IN_CHUNK) {
     const chunk = turnIds.slice(i, i + IN_CHUNK);
     const placeholders = chunk.map((_, j) => `?${j + 1}`).join(', ');
     const { results } = await db
       .prepare(
-        `SELECT turn_id, 'emitted' AS reason FROM events
-          WHERE event = 'chat_turn' AND posthog_emitted_at IS NOT NULL
-            AND turn_id IN (${placeholders})
+        `SELECT turn_id, text_status AS status, 1 AS stored FROM events
+          WHERE event = 'chat_turn' AND turn_id IN (${placeholders})
          UNION ALL
-         SELECT turn_id, 'spooled' AS reason FROM turn_text
+         SELECT turn_id, '${TEXT_STATUS.scrubbed}' AS status, 0 AS stored FROM turn_text
           WHERE turn_id IN (${placeholders})`
       )
       .bind(...chunk)
-      .all<{ turn_id: string; reason: SpoolSkip }>();
-    // 'emitted' wins: it is the row that must not be re-created.
-    for (const row of results) {
-      if (row.reason === 'emitted' || !out.has(row.turn_id)) out.set(row.turn_id, row.reason);
+      .all<{ turn_id: string; status: TextStatus | null; stored: number }>();
+    // The events row wins wherever both exist; apply it last, not by row order.
+    for (const row of [...results].sort((a, b) => a.stored - b.stored)) {
+      out.set(row.turn_id, { status: row.status });
     }
   }
   return out;
