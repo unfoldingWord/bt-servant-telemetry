@@ -6,6 +6,10 @@ import { isKnownEvent, type CleanEvent, type TurnFacts } from '@bt-servant-telem
  * fields below are extracted; anything else (response text, stack traces,
  * tool args, code bodies, CF runtime metadata) is dropped on the floor.
  *
+ * Conversation text (`user_message` / `assistant_reply` on a chat_turn) is
+ * deliberately NOT extracted here. It takes a separate path — scrubbed, then
+ * spooled for PostHog (ingest/text.ts) — so a CleanEvent can never carry it.
+ *
  * The `user_id` field is hashed with HMAC-SHA-256 keyed by a server-side
  * secret salt and namespaced with `client_id` to prevent cross-channel
  * collisions. Raw user_id never leaves this module.
@@ -38,7 +42,8 @@ function asBool(v: unknown): boolean | null {
   return typeof v === 'boolean' ? v : null;
 }
 
-function parseJsonObject(rawJson: string): Record<string, unknown> | null {
+/** A raw log line as an object, or null when it is not a JSON object at all. */
+export function parseJsonObject(rawJson: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(rawJson);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
@@ -78,6 +83,8 @@ function extractTurnFacts(obj: Record<string, unknown>): TurnFacts {
     billable_input_tokens: asNumber(obj.billable_input_tokens),
     had_inbound_voice: asBool(obj.had_inbound_voice),
     had_outbound_voice: asBool(obj.had_outbound_voice),
+    // Not on the wire. Stamped by the tail handler once the text has been scrubbed (ingest/text.ts).
+    text_status: null,
     // Not on the wire. Derived during ingest by insertTurn() from prior turns.
     session_id: null,
     session_turn_index: null,

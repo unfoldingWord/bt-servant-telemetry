@@ -3,7 +3,7 @@
  *
  * Runs the REAL posthog-node client against a stubbed `fetch`, so the wiring
  * (client options, event shape, flush-on-shutdown) is exercised end to end
- * without network. Three properties matter enough to pin here:
+ * without network. Five properties matter enough to pin here:
  *   1. Exactly one `$ai_generation` per chat_turn, carrying PostHog's required
  *      fields, with `$ai_latency` in SECONDS.
  *   2. No key => no client, no fetch. Deploys are safe before secrets land.
@@ -11,6 +11,8 @@
  *   4. What PostHog receives is the SETTLED session: turns wait in D1 for the
  *      settle window, so concurrent or late siblings re-stitch them first,
  *      and only the once-a-minute cron sends them.
+ *   5. Conversation text reaches PostHog only scrubbed, only when a scrubber
+ *      key exists, and never lingers in D1 once sent.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import {
@@ -42,6 +44,7 @@ declare module 'cloudflare:test' {
 }
 
 const PH_HOST = 'https://ph.test';
+const ANTHROPIC_HOST = 'https://api.anthropic.com';
 /** Settle of 0: a turn is eligible for the very next tick after ingest. */
 const withPostHog = {
   ...env,
@@ -51,6 +54,8 @@ const withPostHog = {
 };
 /** The production-shaped configuration: turns wait a minute before sending. */
 const withSettle = { ...withPostHog, POSTHOG_SETTLE_SECONDS: '60' };
+/** PostHog plus a scrubber key: the only configuration under which text may flow. */
+const withText = { ...withPostHog, ANTHROPIC_API_KEY: 'sk-ant-test' };
 
 const NOW = Date.UTC(2026, 8, 3, 12, 0, 0);
 const MIN = 60_000;
@@ -69,6 +74,16 @@ function U(name: string): string {
 function turnMessage(name: string, ts: number): string {
   const o = JSON.parse(CHAT_TURN) as Record<string, unknown>;
   Object.assign(o, { turn_id: U(name), request_id: `req-${name}`, timestamp: ts });
+  return JSON.stringify(o);
+}
+
+const USER_TEXT = 'My pastor Bob said to call him at +1 (555) 010-9999. What does John 3:16 mean?';
+const REPLY_TEXT = "Bob may be thinking of John 3:16, where Jesus speaks of God's love.";
+
+/** A chat_turn line carrying conversation text, as the engine now emits it. */
+function textTurn(name: string, ts: number): string {
+  const o = JSON.parse(turnMessage(name, ts)) as Record<string, unknown>;
+  Object.assign(o, { user_message: USER_TEXT, assistant_reply: REPLY_TEXT });
   return JSON.stringify(o);
 }
 
@@ -99,13 +114,48 @@ async function decodeBody(init: RequestInit | undefined): Promise<Record<string,
   return JSON.parse(text) as Record<string, unknown>;
 }
 
-/** Intercept only PostHog traffic; everything else (D1 is a binding, not fetch) is untouched. */
+/**
+ * Stand-in for the scrubbing model: swaps "Bob" for [name] in each tagged
+ * section and answers in the structured-output shape the SDK parses. In
+ * 'fail' mode it answers 400, which the SDK does not retry.
+ */
+let anthropicMode: 'ok' | 'fail' = 'ok';
+function fakeScrubber(init: RequestInit | undefined): Response {
+  const headers = { 'content-type': 'application/json' };
+  if (anthropicMode === 'fail') {
+    const error = { type: 'error', error: { type: 'invalid_request_error', message: 'nope' } };
+    return new Response(JSON.stringify(error), { status: 400, headers });
+  }
+  const req = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+  const prompt = req.messages[0]?.content ?? '';
+  const pick = (tag: string): string =>
+    new RegExp(`<${tag}>\\n([\\s\\S]*?)\\n</${tag}>`).exec(prompt)?.[1] ?? '';
+  const scrub = (s: string): string => s.replace(/Bob/g, '[name]');
+  const text = JSON.stringify({
+    user_message: scrub(pick('user_message')),
+    assistant_reply: scrub(pick('assistant_reply')),
+  });
+  const message = {
+    id: 'msg_test',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-haiku-4-5',
+    content: [{ type: 'text', text }],
+    stop_reason: 'end_turn',
+    stop_sequence: null,
+    usage: { input_tokens: 1, output_tokens: 1 },
+  };
+  return new Response(JSON.stringify(message), { status: 200, headers });
+}
+
+/** Intercept PostHog and Anthropic traffic; everything else (D1 is a binding, not fetch) is untouched. */
 function stubPostHogFetch(status = 200): Captured[] {
   const seen: Captured[] = [];
   const real = globalThis.fetch.bind(globalThis);
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url =
       typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.startsWith(ANTHROPIC_HOST)) return fakeScrubber(init);
     if (!url.startsWith(PH_HOST)) return real(input, init);
     if (status >= 500) throw new Error('posthog unreachable');
     seen.push({ url, body: await decodeBody(init) });
@@ -122,6 +172,17 @@ function generationsFrom(seen: Captured[]): Array<Record<string, unknown>> {
     const batch = (c.body.batch as Array<Record<string, unknown>> | undefined) ?? [c.body];
     return batch.filter((e) => e.event === '$ai_generation');
   });
+}
+
+/** The properties of the first generation PostHog received. */
+function propsOf(seen: Captured[]): Record<string, unknown> {
+  const [g] = generationsFrom(seen) as [Record<string, unknown>];
+  return g.properties as Record<string, unknown>;
+}
+
+async function spooledCount(): Promise<number> {
+  const row = await env.DB.prepare('SELECT count(*) AS n FROM turn_text').first<{ n: number }>();
+  return row?.n ?? -1;
 }
 
 /** Ingest the fixture batch, then run the cron tick that sends to PostHog. */
@@ -151,8 +212,12 @@ beforeEach(async () => {
   await env.DB.exec('DELETE FROM events');
   await env.DB.exec('DELETE FROM users');
   await env.DB.exec('DELETE FROM user_active_days');
+  await env.DB.exec('DELETE FROM turn_text');
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  anthropicMode = 'ok';
+});
 
 describe('mapping a turn to $ai_generation', () => {
   it('carries every field PostHog requires, with latency in seconds', async () => {
@@ -173,7 +238,7 @@ describe('mapping a turn to $ai_generation', () => {
     expect(p.$set).toEqual({ org: 'unfoldingWord', client_id: 'whatsapp' });
   });
 
-  it('never includes message text and drops null fields', async () => {
+  it('carries no text when the record has none, and drops null fields', async () => {
     const raw = sampleLogMessages.find((m) => m.includes('"event":"chat_turn"')) as string;
     const evt = await redact(raw, 'salt');
     const p = toGenerationProperties(evt as NonNullable<typeof evt>);
@@ -299,5 +364,114 @@ describe('settled delivery', () => {
       ['a', ...names].map((n) => [n, gens.find((g) => g.uuid === U(n))?.index])
     );
     expect(indexByName).toEqual({ a: 1, t1: 2, t2: 3, t3: 4, t4: 5, t5: 6, t6: 7 });
+  });
+});
+
+describe('conversation text', () => {
+  it('sends the scrubbed conversation with the generation, then forgets the text', async () => {
+    const seen = stubPostHogFetch();
+    await runTailAt(withText, [textTurn('a', NOW - MIN)], NOW);
+
+    // Spooled already scrubbed: neither the name nor the number exists anywhere in D1.
+    expect(await spooledCount()).toBe(1);
+    const spool = await env.DB.prepare('SELECT * FROM turn_text').all();
+    const events = await env.DB.prepare('SELECT * FROM events').all();
+    const d1 = JSON.stringify(spool.results) + JSON.stringify(events.results);
+    expect(d1).not.toContain('Bob');
+    expect(d1).not.toContain('010-9999');
+    expect(d1).toContain('[name]');
+    expect(d1).toContain('[phone]');
+
+    await flushQueuedTurns(env.DB, withText, NOW);
+    const p = propsOf(seen);
+    expect(p.text_status).toBe('scrubbed');
+    expect(p.$ai_input).toEqual([
+      {
+        role: 'user',
+        content: 'My pastor [name] said to call him at [phone]. What does John 3:16 mean?',
+      },
+    ]);
+    expect(p.$ai_output_choices).toEqual([
+      {
+        role: 'assistant',
+        content: "[name] may be thinking of John 3:16, where Jesus speaks of God's love.",
+      },
+    ]);
+    expect(JSON.stringify(seen)).not.toContain('Bob');
+    expect(JSON.stringify(seen)).not.toContain('010-9999');
+    expect(await spooledCount()).toBe(0); // sent ⇒ forgotten
+  });
+
+  it('keeps the text spooled when PostHog rejects the batch, and sends it on the next tick', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    stubPostHogFetch(503);
+    await runTailAt(withText, [textTurn('b', NOW - MIN)], NOW);
+    expect(await flushQueuedTurns(env.DB, withText, NOW)).toBe(0);
+    expect(await spooledCount()).toBe(1); // nothing sent, nothing forgotten
+
+    vi.restoreAllMocks();
+    const seen = stubPostHogFetch();
+    expect(await flushQueuedTurns(env.DB, withText, NOW + MIN)).toBe(1);
+    expect(propsOf(seen).text_status).toBe('scrubbed');
+    expect(propsOf(seen)).toHaveProperty('$ai_input');
+    expect(await spooledCount()).toBe(0);
+  });
+
+  it('sends metadata only, and says why, when no scrubber key is configured', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const seen = stubPostHogFetch();
+    await runTailAt(withPostHog, [textTurn('c', NOW - MIN)], NOW); // PostHog yes, scrubber no
+    expect(await spooledCount()).toBe(0);
+
+    await flushQueuedTurns(env.DB, withPostHog, NOW);
+    const p = propsOf(seen);
+    expect(p.text_status).toBe('scrub_unavailable');
+    expect(p).not.toHaveProperty('$ai_input');
+    expect(p).not.toHaveProperty('$ai_output_choices');
+    const warned = warn.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+    expect(warned).toContain('conversation_text_dropped');
+    // Neither the event nor the warning carries the words.
+    expect(JSON.stringify(seen) + warned).not.toContain('Bob');
+  });
+
+  it('sends metadata only when the scrubber fails, never the raw text', async () => {
+    anthropicMode = 'fail';
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const seen = stubPostHogFetch();
+    await runTailAt(withText, [textTurn('d', NOW - MIN)], NOW);
+    expect(await spooledCount()).toBe(0);
+
+    await flushQueuedTurns(env.DB, withText, NOW);
+    const p = propsOf(seen);
+    expect(p.text_status).toBe('scrub_failed');
+    expect(p).not.toHaveProperty('$ai_input');
+    expect(JSON.stringify(seen)).not.toContain('Bob');
+  });
+
+  it('reports text_status off for a record that carries no text', async () => {
+    const seen = stubPostHogFetch();
+    await runTailAt(withText, [turnMessage('e', NOW - MIN)], NOW);
+    await flushQueuedTurns(env.DB, withText, NOW);
+    const p = propsOf(seen);
+    expect(p.text_status).toBe('off');
+    expect(p).not.toHaveProperty('$ai_input');
+  });
+
+  it('sweeps spooled text that was never sent after a day, even with no PostHog key', async () => {
+    const insert = `INSERT INTO turn_text (turn_id, user_message, assistant_reply, created_at)
+      VALUES (?1, ?2, ?3, ?4)`;
+    await env.DB.prepare(insert)
+      .bind(U('stale'), 'x', 'y', NOW - 25 * 60 * MIN)
+      .run();
+    await env.DB.prepare(insert)
+      .bind(U('fresh'), 'x', 'y', NOW - 60 * MIN)
+      .run();
+
+    expect(await flushQueuedTurns(env.DB, env as PostHogEnv, NOW)).toBe(0); // no key: nothing sent…
+    const { results } = await env.DB.prepare('SELECT turn_id FROM turn_text').all<{
+      turn_id: string;
+    }>();
+    expect(results.map((r) => r.turn_id)).toEqual([U('fresh')]); // …but the day-old row is gone
   });
 });

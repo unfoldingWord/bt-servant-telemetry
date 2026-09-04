@@ -1,9 +1,18 @@
 import { redact } from '../ingest/redact.js';
 import { ingestBatch } from '../ingest/upsert.js';
 import { sessionGapMs } from '../ingest/sessions.js';
+import { scrubConversation, type ScrubEnv } from '../ingest/scrub.js';
+import {
+  extractConversationText,
+  spoolScrubbedText,
+  TEXT_STATUS,
+  warnTextDropped,
+  type ConversationText,
+  type SpooledText,
+} from '../ingest/text.js';
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
 
-type Env = {
+type Env = ScrubEnv & {
   DB: D1Database;
   PII_HASH_SALT: string;
   /** Inactivity gap that splits a user's turns into conversations. Default 30. */
@@ -35,6 +44,57 @@ async function redactAll(rawMessages: string[], salt: string): Promise<CleanEven
   return clean;
 }
 
+/**
+ * Decide one turn's text fate: stamp `text_status` on the event and return
+ * the scrubbed row to spool, or null when nothing may be spooled. The raw
+ * text is only ever held in this function's arguments.
+ */
+async function scrubTurn(
+  evt: CleanEvent,
+  text: ConversationText | undefined,
+  env: ScrubEnv
+): Promise<SpooledText | null> {
+  if (!text) {
+    evt.text_status = TEXT_STATUS.off;
+    return null;
+  }
+  if (text.userMessage.trim() === '' && text.assistantReply.trim() === '') {
+    evt.text_status = TEXT_STATUS.empty;
+    return null;
+  }
+  const result = await scrubConversation(text, env);
+  if (!result.ok) {
+    const status = result.reason === 'no_api_key' ? TEXT_STATUS.unavailable : TEXT_STATUS.failed;
+    evt.text_status = status;
+    warnTextDropped(evt, status, result.detail ?? result.reason);
+    return null;
+  }
+  evt.text_status = TEXT_STATUS.scrubbed;
+  return {
+    turn_id: text.turnId,
+    user_message: result.userMessage,
+    assistant_reply: result.assistantReply,
+  };
+}
+
+/** Scrub every chat turn's text in parallel; returns only what may be spooled. */
+async function prepareConversationText(
+  clean: CleanEvent[],
+  rawMessages: string[],
+  env: ScrubEnv
+): Promise<SpooledText[]> {
+  const texts = new Map<string, ConversationText>();
+  for (const raw of rawMessages) {
+    const text = extractConversationText(raw);
+    if (text) texts.set(text.turnId, text);
+  }
+  const turns = clean.filter((evt) => evt.event === 'chat_turn' && evt.turn_id !== null);
+  const rows = await Promise.all(
+    turns.map((evt) => scrubTurn(evt, texts.get(evt.turn_id as string), env))
+  );
+  return rows.filter((row): row is SpooledText => row !== null);
+}
+
 export type TailOverrides = {
   /** Wall clock for the PostHog queue stamp; tests pin it. */
   nowMs?: number;
@@ -51,6 +111,11 @@ export async function tailHandler(
   if (rawMessages.length === 0) return;
   const clean = await redactAll(rawMessages, env.PII_HASH_SALT);
   if (clean.length === 0) return;
+  // Conversation text is scrubbed here, before anything touches D1, and only
+  // the scrubbed text is spooled for the sender. A spooled row nobody sends is
+  // swept after a day (ingest/text.ts).
+  const spool = await prepareConversationText(clean, rawMessages, env);
+  await spoolScrubbedText(env.DB, spool, nowMs);
   // D1 is the durable record. Chat turns are stamped for PostHog here and
   // sent by the once-a-minute cron once their session has settled.
   await ingestBatch(env.DB, clean, {
