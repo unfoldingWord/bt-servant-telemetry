@@ -1,6 +1,7 @@
 import { PostHog } from 'posthog-node';
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
 import { EVENT_COLUMN_LIST, rowToCleanEvent, type EventRow } from './event-row.js';
+import { DELETE_TEXT, loadSpooledText, sweepExpiredText, type SpooledText } from './text.js';
 
 /**
  * PostHog AI-observability emitter.
@@ -18,9 +19,13 @@ import { EVENT_COLUMN_LIST, rowToCleanEvent, type EventRow } from './event-row.j
  * property. A second plain event per turn would double the identified-event
  * bill for no new information.
  *
- * No message text is sent. `$ai_input` / `$ai_output_choices` are deliberately
- * absent pending the content decision — and structurally absent too, since
- * `CleanEvent` never carried the text in the first place.
+ * Message text travels separately from the turn facts. Tail ingest scrubs
+ * personal names and contact details out of the user's message and the
+ * assistant's reply (ingest/scrub.ts) and spools ONLY the scrubbed text
+ * (ingest/text.ts). The
+ * sender attaches it as `$ai_input` / `$ai_output_choices` and deletes the
+ * spooled row once PostHog accepts the turn. `CleanEvent` never carries text,
+ * so the events table cannot; `text_status` records why a turn has or lacks it.
  *
  * Delivery is QUEUED, not inline. A turn's session_id / session_turn_index
  * can still change for a moment after it lands - a late or concurrent sibling
@@ -73,6 +78,15 @@ function compact(obj: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
+/** PostHog's conversation shape for the one exchange this turn is. */
+function conversationProperties(text: SpooledText | undefined): Record<string, unknown> {
+  if (!text) return {};
+  return {
+    $ai_input: [{ role: 'user', content: text.user_message }],
+    $ai_output_choices: [{ role: 'assistant', content: text.assistant_reply }],
+  };
+}
+
 /**
  * Map one turn to PostHog's `$ai_generation` shape.
  *
@@ -83,8 +97,14 @@ function compact(obj: Record<string, unknown>): Record<string, unknown> {
  * `mode` is the mode that governed the turn and is the attribution key.
  * `mode_switched_to` is a NEXT-turn selection and must never be used for
  * attribution — it is included so the switch itself is observable.
+ *
+ * `text`, when spooled for this turn, is the SCRUBBED conversation; it is the
+ * only free text that ever appears on the event.
  */
-export function toGenerationProperties(evt: CleanEvent): Record<string, unknown> {
+export function toGenerationProperties(
+  evt: CleanEvent,
+  text?: SpooledText
+): Record<string, unknown> {
   return compact({
     // ── PostHog AI observability contract ──
     $ai_trace_id: evt.turn_id,
@@ -119,6 +139,10 @@ export function toGenerationProperties(evt: CleanEvent): Record<string, unknown>
     billable_input_tokens: num(evt.billable_input_tokens),
     had_inbound_voice: evt.had_inbound_voice,
     had_outbound_voice: evt.had_outbound_voice,
+    // Why this turn does or does not carry conversation text (ingest/text.ts).
+    text_status: evt.text_status,
+    // ── conversation text (scrubbed at ingest; present only when spooled) ──
+    ...conversationProperties(text),
     // Person properties kept current on every turn; drives cohorts (Q9).
     $set: compact({ org: evt.org, client_id: evt.client_id }),
   });
@@ -169,6 +193,37 @@ function warn(event: string, turns: number, error: unknown): void {
   );
 }
 
+/** Capture every turn and drain the client; throws if PostHog rejected the batch. */
+async function sendGenerations(
+  client: PostHog,
+  turns: CleanEvent[],
+  texts: Map<string, SpooledText>,
+  env: PostHogEnv
+): Promise<void> {
+  // posthog-node reports transport failures on its emitter and then swallows
+  // them inside shutdown(), so this is the only way to learn a send failed.
+  let failure: unknown = null;
+  client.on('error', (error: unknown) => {
+    failure = error;
+  });
+  for (const evt of turns) {
+    const properties = toGenerationProperties(evt, texts.get(evt.turn_id as string));
+    // Event-level, never $set: the same person can appear in both environments.
+    if (env.ENVIRONMENT) properties.environment = env.ENVIRONMENT;
+    client.capture({
+      distinctId: evt.user_hash as string,
+      event: '$ai_generation',
+      properties,
+      timestamp: new Date(evt.ts),
+      // turn_id is a UUID minted per turn by the engine. Using it as the
+      // event uuid makes a retried or replayed send idempotent in PostHog.
+      uuid: evt.turn_id as string,
+    });
+  }
+  await client.shutdown();
+  if (failure !== null) throw failure;
+}
+
 /**
  * Emit every settled, unsent turn as an `$ai_generation`. Runs from the
  * once-a-minute cron and nowhere else.
@@ -179,6 +234,13 @@ function warn(event: string, turns: number, error: unknown): void {
  * fails or dies leaves its rows for the next tick, and `turn_id` as the event
  * uuid makes the resend idempotent in PostHog.
  *
+ * Spooled conversation text rides along with its turn and is deleted in the
+ * same batch that marks the turn emitted. Text that never gets sent is swept
+ * after a day on every tick — before the key check, on purpose, so spooled
+ * text cannot outlive a day even on a worker that is not sending to PostHog.
+ * The sweep re-labels the turns it strips (`spool_expired`) in the same
+ * transaction, so a turn sent after a long outage never claims text it lost.
+ *
  * Returns the number of turns handed to the client, for tests and logs.
  */
 export async function flushQueuedTurns(
@@ -186,6 +248,7 @@ export async function flushQueuedTurns(
   env: PostHogEnv,
   nowMs: number
 ): Promise<number> {
+  await sweepExpiredText(db, nowMs);
   const client = createClient(env);
   if (!client) return 0;
 
@@ -195,37 +258,20 @@ export async function flushQueuedTurns(
     .all<EventRow>();
   const turns = settled.results.map(rowToCleanEvent);
   if (turns.length === 0) return 0;
-
-  // posthog-node reports transport failures on its emitter and then swallows
-  // them inside shutdown(), so this is the only way to learn a send failed.
-  let failure: unknown = null;
-  client.on('error', (error: unknown) => {
-    failure = error;
-  });
+  const texts = await loadSpooledText(
+    db,
+    turns.map((evt) => evt.turn_id as string)
+  );
 
   try {
-    for (const evt of turns) {
-      const properties = toGenerationProperties(evt);
-      // Event-level, never $set: the same person can appear in both environments.
-      if (env.ENVIRONMENT) properties.environment = env.ENVIRONMENT;
-      client.capture({
-        distinctId: evt.user_hash as string,
-        event: '$ai_generation',
-        properties,
-        timestamp: new Date(evt.ts),
-        // turn_id is a UUID minted per turn by the engine. Using it as the
-        // event uuid makes a retried or replayed send idempotent in PostHog.
-        uuid: evt.turn_id as string,
-      });
-    }
-    await client.shutdown();
-    if (failure !== null) throw failure;
-    await db.batch(
-      turns.map((evt) => db.prepare(MARK_EMITTED).bind(nowMs, evt.request_id, evt.ts))
-    );
+    await sendGenerations(client, turns, texts, env);
+    await db.batch([
+      ...turns.map((evt) => db.prepare(MARK_EMITTED).bind(nowMs, evt.request_id, evt.ts)),
+      ...turns.map((evt) => db.prepare(DELETE_TEXT).bind(evt.turn_id)),
+    ]);
     return turns.length;
   } catch (error) {
     warn('posthog_emit_failed', turns.length, error);
-    return 0; // nothing marked: the next tick sends these again
+    return 0; // nothing marked, nothing deleted: the next tick sends these again
   }
 }

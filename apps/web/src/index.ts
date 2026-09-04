@@ -32,6 +32,10 @@ type Env = {
   POSTHOG_HOST?: string;
   /** Seconds a chat turn waits in D1 before its $ai_generation is sent. */
   POSTHOG_SETTLE_SECONDS?: string;
+  // Conversation-text scrubber (ingest/scrub.ts). Key is a per-env secret;
+  // without it turns go to PostHog with metadata only.
+  ANTHROPIC_API_KEY?: string;
+  SCRUB_MODEL?: string;
   /** Inactivity gap (minutes) that splits a user's chat turns into sessions. */
   SESSION_GAP_MINUTES?: string;
   // SvelteKit static dashboard, served via Workers static assets binding.

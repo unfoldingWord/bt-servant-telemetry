@@ -35,6 +35,11 @@ POSTHOG_HOST = "https://us.i.posthog.com"
 # Seconds a chat turn waits in D1 before its $ai_generation is sent, so a late
 # sibling can still re-stitch its session first (see ingest/posthog.ts).
 POSTHOG_SETTLE_SECONDS = "60"
+# Model that scrubs personal names out of conversation text before it is
+# spooled for PostHog (ingest/scrub.ts). Its key is a secret:
+# `wrangler secret put ANTHROPIC_API_KEY --env <env>`. Without the key, turns
+# are sent with metadata only (text_status = scrub_unavailable).
+SCRUB_MODEL = "claude-haiku-4-5"
 ENVIRONMENT = "development"
 TELEMETRY_EPOCH = "2026-04-24"
 CF_ACCOUNT_ID = "5a3ffd86280d3ed086be76d955829242"
@@ -67,6 +72,11 @@ POSTHOG_HOST = "https://us.i.posthog.com"
 # Seconds a chat turn waits in D1 before its $ai_generation is sent, so a late
 # sibling can still re-stitch its session first (see ingest/posthog.ts).
 POSTHOG_SETTLE_SECONDS = "60"
+# Model that scrubs personal names out of conversation text before it is
+# spooled for PostHog (ingest/scrub.ts). Its key is a secret:
+# `wrangler secret put ANTHROPIC_API_KEY --env <env>`. Without the key, turns
+# are sent with metadata only (text_status = scrub_unavailable).
+SCRUB_MODEL = "claude-haiku-4-5"
 ENVIRONMENT = "dev"
 TELEMETRY_EPOCH = "2026-04-24"
 CF_ACCOUNT_ID = "5a3ffd86280d3ed086be76d955829242"
@@ -101,6 +111,11 @@ POSTHOG_HOST = "https://us.i.posthog.com"
 # Seconds a chat turn waits in D1 before its $ai_generation is sent, so a late
 # sibling can still re-stitch its session first (see ingest/posthog.ts).
 POSTHOG_SETTLE_SECONDS = "60"
+# Model that scrubs personal names out of conversation text before it is
+# spooled for PostHog (ingest/scrub.ts). Its key is a secret:
+# `wrangler secret put ANTHROPIC_API_KEY --env <env>`. Without the key, turns
+# are sent with metadata only (text_status = scrub_unavailable).
+SCRUB_MODEL = "claude-haiku-4-5"
 ENVIRONMENT = "production"
 TELEMETRY_EPOCH = "2026-04-24"
 CF_ACCOUNT_ID = "5a3ffd86280d3ed086be76d955829242"

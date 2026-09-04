@@ -27,6 +27,8 @@ export type CleanEvent = {
   //
   // No free-text ever lands here. Every field is a bounded enum, an opaque id,
   // a model name, or a number — the same discipline the rest of this type keeps.
+  // Conversation text is scrubbed and spooled SEPARATELY (ingest/text.ts) and
+  // is deliberately not part of this type, so the events table cannot carry it.
   /** Per-turn id. Joins this row to the generation-level orchestrator logs. */
   turn_id: string | null;
   /** Mode that GOVERNED the turn (mode at turn start). The attribution key. */
@@ -66,6 +68,9 @@ export type CleanEvent = {
   had_inbound_voice: boolean | null;
   /** Turn produced a voice reply (TTS spend, not captured here). */
   had_outbound_voice: boolean | null;
+  /** Why the turn's conversation text did or did not reach PostHog — a bounded
+   *  enum stamped at ingest (ingest/text.ts). Never the text itself. */
+  text_status: string | null;
   /** Derived at ingest (ingest/sessions.ts): turn_id of the session's first turn. */
   session_id: string | null;
   /** Derived at ingest: 1-based position of this turn within its session. */
@@ -95,6 +100,7 @@ export type TurnFacts = Pick<
   | 'billable_input_tokens'
   | 'had_inbound_voice'
   | 'had_outbound_voice'
+  | 'text_status'
   | 'session_id'
   | 'session_turn_index'
 >;
@@ -129,6 +135,7 @@ export const NO_TURN_FACTS: TurnFacts = {
   billable_input_tokens: null,
   had_inbound_voice: null,
   had_outbound_voice: null,
+  text_status: null,
   session_id: null,
   session_turn_index: null,
 };

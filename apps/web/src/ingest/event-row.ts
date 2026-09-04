@@ -44,6 +44,7 @@ export const FACT_COLUMNS = [
   'billable_input_tokens',
   'had_inbound_voice',
   'had_outbound_voice',
+  'text_status',
 ] as const;
 
 export type FactColumn = (typeof FACT_COLUMNS)[number];
@@ -92,6 +93,7 @@ function factRecord(evt: CleanEvent): Record<FactColumn, unknown> {
     billable_input_tokens: evt.billable_input_tokens,
     had_inbound_voice: boolToInt(evt.had_inbound_voice),
     had_outbound_voice: boolToInt(evt.had_outbound_voice),
+    text_status: evt.text_status,
   };
 }
 
@@ -167,6 +169,7 @@ export function rowToCleanEvent(row: EventRow): CleanEvent {
     billable_input_tokens: num(row.billable_input_tokens),
     had_inbound_voice: intToBool(num(row.had_inbound_voice)),
     had_outbound_voice: intToBool(num(row.had_outbound_voice)),
+    text_status: str(row.text_status),
     session_id: row.session_id,
     session_turn_index: row.session_turn_index,
   };
