@@ -1,13 +1,7 @@
 import { PostHog } from 'posthog-node';
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
 import { EVENT_COLUMN_LIST, rowToCleanEvent, type EventRow } from './event-row.js';
-import {
-  DELETE_TEXT,
-  SWEEP_STALE_TEXT,
-  TEXT_MAX_AGE_MS,
-  loadSpooledText,
-  type SpooledText,
-} from './text.js';
+import { DELETE_TEXT, loadSpooledText, sweepExpiredText, type SpooledText } from './text.js';
 
 /**
  * PostHog AI-observability emitter.
@@ -244,6 +238,8 @@ async function sendGenerations(
  * same batch that marks the turn emitted. Text that never gets sent is swept
  * after a day on every tick — before the key check, on purpose, so spooled
  * text cannot outlive a day even on a worker that is not sending to PostHog.
+ * The sweep re-labels the turns it strips (`spool_expired`) in the same
+ * transaction, so a turn sent after a long outage never claims text it lost.
  *
  * Returns the number of turns handed to the client, for tests and logs.
  */
@@ -252,10 +248,7 @@ export async function flushQueuedTurns(
   env: PostHogEnv,
   nowMs: number
 ): Promise<number> {
-  await db
-    .prepare(SWEEP_STALE_TEXT)
-    .bind(nowMs - TEXT_MAX_AGE_MS)
-    .run();
+  await sweepExpiredText(db, nowMs);
   const client = createClient(env);
   if (!client) return 0;
 

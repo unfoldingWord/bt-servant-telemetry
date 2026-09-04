@@ -458,6 +458,86 @@ describe('conversation text', () => {
     expect(p).not.toHaveProperty('$ai_input');
   });
 
+  it('stops a turn claiming scrubbed once the sweep has dropped its text', async () => {
+    // A long PostHog outage: the turn is ingested with text, nothing sends it
+    // for a day, the sweep takes the words. What eventually reaches PostHog
+    // must say so rather than claim text it no longer has.
+    const seen = stubPostHogFetch();
+    await runTailAt(withText, [textTurn('f', NOW - MIN)], NOW);
+    expect(await spooledCount()).toBe(1);
+
+    const DAY = 24 * 60 * MIN;
+    await flushQueuedTurns(env.DB, env as PostHogEnv, NOW + DAY + MIN); // no key: sweep only
+    expect(await spooledCount()).toBe(0);
+    expect(seen).toHaveLength(0);
+
+    await flushQueuedTurns(env.DB, withText, NOW + DAY + 2 * MIN);
+    const p = propsOf(seen);
+    expect(p.text_status).toBe('spool_expired');
+    expect(p).not.toHaveProperty('$ai_input');
+    expect(p).not.toHaveProperty('$ai_output_choices');
+  });
+
+  it('leaves an already-emitted turn saying scrubbed when the sweep runs', async () => {
+    // The other half of the same rule: `scrubbed` on an emitted turn is a true
+    // account of what PostHog received, so expiry must not rewrite it.
+    const seen = stubPostHogFetch();
+    await runTailAt(withText, [textTurn('g', NOW - MIN)], NOW);
+    await flushQueuedTurns(env.DB, withText, NOW);
+    expect(propsOf(seen).text_status).toBe('scrubbed');
+
+    await flushQueuedTurns(env.DB, withText, NOW + 25 * 60 * MIN);
+    const row = await env.DB.prepare(
+      `SELECT text_status FROM events WHERE event = 'chat_turn'`
+    ).first<{ text_status: string }>();
+    expect(row?.text_status).toBe('scrubbed');
+  });
+
+  it('does not re-spool or re-scrub when a tail batch is redelivered after emission', async () => {
+    const seen = stubPostHogFetch();
+    const batch = [textTurn('h', NOW - MIN)];
+    await runTailAt(withText, batch, NOW);
+    await flushQueuedTurns(env.DB, withText, NOW);
+    expect(propsOf(seen).text_status).toBe('scrubbed');
+    expect(await spooledCount()).toBe(0); // sent ⇒ forgotten
+
+    // Cloudflare redelivers the same tail batch. The turn is already in
+    // PostHog and its text deleted; nothing may recreate a row no sender will
+    // ever select, and the scrubber must not be paid for a second time.
+    const scrubCalls = (): number =>
+      (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter((c) =>
+        String(c[0]).startsWith(ANTHROPIC_HOST)
+      ).length;
+    const before = scrubCalls();
+    expect(before).toBeGreaterThan(0); // the first pass really did call the scrubber
+    await runTailAt(withText, batch, NOW + MIN);
+    expect(await spooledCount()).toBe(0);
+    expect(scrubCalls()).toBe(before);
+
+    // …and the emitted turn keeps the status it was sent with.
+    const row = await env.DB.prepare(
+      `SELECT text_status FROM events WHERE event = 'chat_turn'`
+    ).first<{ text_status: string }>();
+    expect(row?.text_status).toBe('scrubbed');
+  });
+
+  it('does not re-scrub a turn whose text is still spooled', async () => {
+    stubPostHogFetch();
+    const batch = [textTurn('i', NOW - MIN)];
+    await runTailAt(withText, batch, NOW);
+    expect(await spooledCount()).toBe(1);
+
+    const scrubCalls = (): number =>
+      (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter((c) =>
+        String(c[0]).startsWith(ANTHROPIC_HOST)
+      ).length;
+    const before = scrubCalls();
+    expect(before).toBeGreaterThan(0);
+    await runTailAt(withText, batch, NOW + 1000); // redelivered before the sender ran
+    expect(scrubCalls()).toBe(before);
+    expect(await spooledCount()).toBe(1);
+  });
+
   it('sweeps spooled text that was never sent after a day, even with no PostHog key', async () => {
     const insert = `INSERT INTO turn_text (turn_id, user_message, assistant_reply, created_at)
       VALUES (?1, ?2, ?3, ?4)`;
