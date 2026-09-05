@@ -3,7 +3,7 @@
  *
  * Runs the REAL posthog-node client against a stubbed `fetch`, so the wiring
  * (client options, event shape, flush-on-shutdown) is exercised end to end
- * without network. Five properties matter enough to pin here:
+ * without network. Six properties matter enough to pin here:
  *   1. Exactly one `$ai_generation` per chat_turn, carrying PostHog's required
  *      fields, with `$ai_latency` in SECONDS.
  *   2. No key => no client, no fetch. Deploys are safe before secrets land.
@@ -13,6 +13,9 @@
  *      and only the once-a-minute cron sends them.
  *   5. Conversation text reaches PostHog only scrubbed, only when a scrubber
  *      key exists, and never lingers in D1 once sent.
+ *   6. Tool calls arrive twice from one list — as `tool_use` blocks on the
+ *      generation and as one `$ai_span` each — with ids derived from the turn,
+ *      so a resend is idempotent and arguments never travel.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import {
@@ -33,6 +36,7 @@ import {
   type PostHogEnv,
 } from '../../src/ingest/posthog.js';
 import { redact } from '../../src/ingest/redact.js';
+import { toolCallUuid } from '../../src/ingest/tool-calls.js';
 import { buildTraceItems, sampleLogMessages } from '../fixtures/sample-tail-events.js';
 
 declare module 'cloudflare:test' {
@@ -42,6 +46,8 @@ declare module 'cloudflare:test' {
     TEST_MIGRATIONS: D1Migration[];
   }
 }
+
+type R = Record<string, unknown>;
 
 const PH_HOST = 'https://ph.test';
 const ANTHROPIC_HOST = 'https://api.anthropic.com';
@@ -84,6 +90,31 @@ const REPLY_TEXT = "Bob may be thinking of John 3:16, where Jesus speaks of God'
 function textTurn(name: string, ts: number): string {
   const o = JSON.parse(turnMessage(name, ts)) as Record<string, unknown>;
   Object.assign(o, { user_message: USER_TEXT, assistant_reply: REPLY_TEXT });
+  return JSON.stringify(o);
+}
+
+/** Two tool calls as the engine records them: a lookup that worked, then one that failed. */
+const TOOL_CALLS = (ts: number): Array<Record<string, unknown>> => [
+  {
+    name: 'fetch_scripture',
+    server_id: 'translation-helps',
+    started_at: ts - 3000,
+    duration_ms: 812,
+    ok: true,
+  },
+  {
+    name: 'search_translation_notes',
+    server_id: 'translation-helps',
+    started_at: ts - 2000,
+    duration_ms: 1500,
+    ok: false,
+  },
+];
+
+/** A chat_turn line carrying tool calls and the engine build, on top of `base`. */
+function toolTurn(base: string, ts: number, extra: Record<string, unknown> = {}): string {
+  const o = JSON.parse(base) as Record<string, unknown>;
+  Object.assign(o, { engine_version: '2.49.0', tool_calls: TOOL_CALLS(ts), ...extra });
   return JSON.stringify(o);
 }
 
@@ -167,11 +198,19 @@ function stubPostHogFetch(status = 200): Captured[] {
   return seen;
 }
 
-function generationsFrom(seen: Captured[]): Array<Record<string, unknown>> {
+function eventsFrom(seen: Captured[], name: string): Array<Record<string, unknown>> {
   return seen.flatMap((c) => {
     const batch = (c.body.batch as Array<Record<string, unknown>> | undefined) ?? [c.body];
-    return batch.filter((e) => e.event === '$ai_generation');
+    return batch.filter((e) => e.event === name);
   });
+}
+
+function generationsFrom(seen: Captured[]): Array<Record<string, unknown>> {
+  return eventsFrom(seen, '$ai_generation');
+}
+
+function spansFrom(seen: Captured[]): Array<Record<string, unknown>> {
+  return eventsFrom(seen, '$ai_span');
 }
 
 /** The properties of the first generation PostHog received. */
@@ -242,7 +281,7 @@ describe('mapping a turn to $ai_generation', () => {
     // 1726 ms -> 1.726 s. PostHog's unit is seconds; this is the trap.
     expect(p.$ai_latency).toBeCloseTo(1.726, 6);
     expect(p.mode).toBe('local-test');
-    expect(p.$set).toEqual({ org: 'unfoldingWord', client_id: 'whatsapp' });
+    expect(p.$set).toMatchObject({ org: 'unfoldingWord', client_id: 'whatsapp' });
   });
 
   it('carries no text when the record has none, and drops null fields', async () => {
@@ -401,7 +440,12 @@ describe('conversation text', () => {
     expect(p.$ai_output_choices).toEqual([
       {
         role: 'assistant',
-        content: "[name] may be thinking of John 3:16, where Jesus speaks of God's love.",
+        content: [
+          {
+            type: 'text',
+            text: "[name] may be thinking of John 3:16, where Jesus speaks of God's love.",
+          },
+        ],
       },
     ]);
     expect(JSON.stringify(seen)).not.toContain('Bob');
@@ -578,5 +622,119 @@ describe('conversation text', () => {
       turn_id: string;
     }>();
     expect(results.map((r) => r.turn_id)).toEqual([U('fresh')]); // …but the day-old row is gone
+  });
+});
+
+describe('tool calls', () => {
+  it('emits one $ai_span per tool call under the turn, and tool_use blocks on the generation', async () => {
+    const seen = stubPostHogFetch();
+    const ts = NOW - MIN;
+    await runTailAt(withPostHog, [toolTurn(turnMessage('a', ts), ts)], NOW);
+    await flushQueuedTurns(env.DB, withPostHog, NOW);
+
+    // Spans: one per call, parented to the turn, with deterministic ids and the call's own timing.
+    const spans = spansFrom(seen);
+    expect(spans.map((s) => (s.properties as R).$ai_span_name)).toEqual([
+      'fetch_scripture',
+      'search_translation_notes',
+    ]);
+    expect(spans.map((s) => s.uuid)).toEqual([toolCallUuid(U('a'), 0), toolCallUuid(U('a'), 1)]);
+    for (const s of spans) {
+      const p = s.properties as R;
+      expect(s.distinct_id).toMatch(/^[0-9a-f]{64}$/);
+      expect(p.$ai_trace_id).toBe(U('a'));
+      expect(p.$ai_parent_id).toBe(U('a'));
+      expect(p.$ai_session_id).toBe(U('a'));
+      expect(p.server_id).toBe('translation-helps');
+      expect(p.environment).toBe('test');
+    }
+    expect((spans[0]?.properties as R).$ai_latency).toBeCloseTo(0.812, 6);
+    expect((spans[0]?.properties as R).$ai_is_error).toBe(false);
+    expect((spans[1]?.properties as R).$ai_is_error).toBe(true);
+    expect(spans[0]?.timestamp).toBe(new Date(ts - 3000).toISOString());
+
+    // The generation: names for breakdowns, tool_use blocks for the Tools tab, the build that answered.
+    const p = propsOf(seen);
+    expect(p.tools_called).toEqual(['fetch_scripture', 'search_translation_notes']);
+    expect(p.tool_call_count).toBe(2);
+    expect(p.engine_version).toBe('2.49.0');
+    expect(p.$ai_output_choices).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: toolCallUuid(U('a'), 0), name: 'fetch_scripture', input: {} },
+          {
+            type: 'tool_use',
+            id: toolCallUuid(U('a'), 1),
+            name: 'search_translation_notes',
+            input: {},
+          },
+        ],
+      },
+    ]);
+    expect(p).not.toHaveProperty('$ai_input'); // no text on this turn
+  });
+
+  it('places the scrubbed reply after the tool_use blocks when a turn has both', async () => {
+    const seen = stubPostHogFetch();
+    const ts = NOW - MIN;
+    await runTailAt(withText, [toolTurn(textTurn('b', ts), ts)], NOW);
+    await flushQueuedTurns(env.DB, withText, NOW);
+
+    const p = propsOf(seen);
+    expect(p.text_status).toBe('scrubbed');
+    expect(p).toHaveProperty('$ai_input');
+    const [choice] = p.$ai_output_choices as [{ content: Array<{ type: string }> }];
+    expect(choice.content.map((c) => c.type)).toEqual(['tool_use', 'tool_use', 'text']);
+    expect(spansFrom(seen)).toHaveLength(2);
+  });
+
+  it('never forwards tool arguments, even if an engine sent them', async () => {
+    const seen = stubPostHogFetch();
+    const ts = NOW - MIN;
+    const withArgs = TOOL_CALLS(ts).map((c) => ({ ...c, args: { reference: 'Luke 2:3 for Bob' } }));
+    await runTailAt(
+      withPostHog,
+      [toolTurn(turnMessage('c', ts), ts, { tool_calls: withArgs })],
+      NOW
+    );
+    await flushQueuedTurns(env.DB, withPostHog, NOW);
+
+    expect(spansFrom(seen)).toHaveLength(2);
+    const everything =
+      JSON.stringify(seen) +
+      JSON.stringify((await env.DB.prepare('SELECT * FROM events').all()).results);
+    expect(everything).not.toContain('reference');
+    expect(everything).not.toContain('Luke 2:3');
+    expect(everything).not.toContain('Bob');
+  });
+
+  it('resends spans with the same ids after a rejected batch', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    stubPostHogFetch(503);
+    const ts = NOW - MIN;
+    await runTailAt(withPostHog, [toolTurn(turnMessage('d', ts), ts)], NOW);
+    expect(await flushQueuedTurns(env.DB, withPostHog, NOW)).toBe(0);
+
+    vi.restoreAllMocks();
+    const seen = stubPostHogFetch();
+    expect(await flushQueuedTurns(env.DB, withPostHog, NOW + MIN)).toBe(1);
+    expect(spansFrom(seen).map((s) => s.uuid)).toEqual([
+      toolCallUuid(U('d'), 0),
+      toolCallUuid(U('d'), 1),
+    ]);
+  });
+
+  it('sends no spans and no tool blocks for a turn that recorded none', async () => {
+    const seen = stubPostHogFetch();
+    await runTailAt(withPostHog, [turnMessage('e', NOW - MIN)], NOW);
+    await flushQueuedTurns(env.DB, withPostHog, NOW);
+
+    expect(spansFrom(seen)).toHaveLength(0);
+    const p = propsOf(seen);
+    expect(p).not.toHaveProperty('tools_called');
+    expect(p).not.toHaveProperty('tool_call_count');
+    expect(p).not.toHaveProperty('$ai_output_choices');
   });
 });
