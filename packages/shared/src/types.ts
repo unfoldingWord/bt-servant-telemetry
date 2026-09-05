@@ -1,4 +1,19 @@
 /**
+ * One tool call the engine made during a turn — names and numbers only, never
+ * the arguments or the result, which can carry user text.
+ */
+export type ToolCallRecord = {
+  /** Tool name as the model called it (e.g. `fetch_scripture`). */
+  name: string;
+  /** MCP server that owns the tool; null for engine-hosted tools. */
+  server_id: string | null;
+  /** Epoch ms when the call started. */
+  started_at: number;
+  duration_ms: number;
+  ok: boolean;
+};
+
+/**
  * Shape produced by the ingest boundary. Every PII-bearing field has been
  * dropped or hashed by the time a CleanEvent exists.
  */
@@ -71,6 +86,11 @@ export type CleanEvent = {
   /** Why the turn's conversation text did or did not reach PostHog — a bounded
    *  enum stamped at ingest (ingest/text.ts). Never the text itself. */
   text_status: string | null;
+  /** Build of the engine that produced the turn, so any metric can be split by deploy. */
+  engine_version: string | null;
+  /** The tool calls the orchestrator made this turn, in order (ingest/tool-calls.ts).
+   *  Names, servers and timings only — never arguments. Stored as JSON in D1. */
+  tool_calls: ToolCallRecord[] | null;
   /** Derived at ingest (ingest/sessions.ts): turn_id of the session's first turn. */
   session_id: string | null;
   /** Derived at ingest: 1-based position of this turn within its session. */
@@ -101,6 +121,8 @@ export type TurnFacts = Pick<
   | 'had_inbound_voice'
   | 'had_outbound_voice'
   | 'text_status'
+  | 'engine_version'
+  | 'tool_calls'
   | 'session_id'
   | 'session_turn_index'
 >;
@@ -136,6 +158,8 @@ export const NO_TURN_FACTS: TurnFacts = {
   had_inbound_voice: null,
   had_outbound_voice: null,
   text_status: null,
+  engine_version: null,
+  tool_calls: null,
   session_id: null,
   session_turn_index: null,
 };
