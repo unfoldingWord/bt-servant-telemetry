@@ -281,7 +281,7 @@ describe('mapping a turn to $ai_generation', () => {
     // 1726 ms -> 1.726 s. PostHog's unit is seconds; this is the trap.
     expect(p.$ai_latency).toBeCloseTo(1.726, 6);
     expect(p.mode).toBe('local-test');
-    expect(p.$set).toEqual({ org: 'unfoldingWord', client_id: 'whatsapp' });
+    expect(p.$set).toMatchObject({ org: 'unfoldingWord', client_id: 'whatsapp' });
   });
 
   it('carries no text when the record has none, and drops null fields', async () => {

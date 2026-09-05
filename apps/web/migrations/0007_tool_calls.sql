@@ -12,3 +12,4 @@
 
 ALTER TABLE events ADD COLUMN engine_version TEXT;  -- e.g. "2.49.0"
 ALTER TABLE events ADD COLUMN tool_calls TEXT;      -- JSON: [{name, server_id, started_at, duration_ms, ok}, ...]
+ALTER TABLE events ADD COLUMN error_type TEXT;      -- failed turns only: bounded error class or code (exit_reason = error)

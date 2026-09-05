@@ -89,6 +89,8 @@ function extractTurnFacts(obj: Record<string, unknown>): TurnFacts {
     engine_version: asString(obj.engine_version),
     // Validated item by item; argument blobs, if an engine ever sent any, are dropped here.
     tool_calls: parseToolCalls(obj.tool_calls),
+    // Failed turns only (exit_reason = error): the engine's bounded error class or code.
+    error_type: asString(obj.error_type),
     // Not on the wire. Derived during ingest by insertTurn() from prior turns.
     session_id: null,
     session_turn_index: null,

@@ -66,7 +66,8 @@ export type CleanEvent = {
   model: string | null;
   /** Orchestration iterations actually run. */
   iterations: number | null;
-  /** How the orchestration loop exited — bounded enum. */
+  /** How the orchestration loop exited — bounded enum. `error` marks a turn
+   *  that failed for good and never answered (see `error_type`). */
   exit_reason: string | null;
   /** stop_reason of the final Anthropic response. */
   stop_reason: string | null;
@@ -91,6 +92,9 @@ export type CleanEvent = {
   /** The tool calls the orchestrator made this turn, in order (ingest/tool-calls.ts).
    *  Names, servers and timings only — never arguments. Stored as JSON in D1. */
   tool_calls: ToolCallRecord[] | null;
+  /** Failed turns only: the engine's bounded error class or code (e.g.
+   *  `MCPError`, `RATE_LIMIT_EXCEEDED`). Never the error message. */
+  error_type: string | null;
   /** Derived at ingest (ingest/sessions.ts): turn_id of the session's first turn. */
   session_id: string | null;
   /** Derived at ingest: 1-based position of this turn within its session. */
@@ -123,6 +127,7 @@ export type TurnFacts = Pick<
   | 'text_status'
   | 'engine_version'
   | 'tool_calls'
+  | 'error_type'
   | 'session_id'
   | 'session_turn_index'
 >;
@@ -160,6 +165,7 @@ export const NO_TURN_FACTS: TurnFacts = {
   text_status: null,
   engine_version: null,
   tool_calls: null,
+  error_type: null,
   session_id: null,
   session_turn_index: null,
 };

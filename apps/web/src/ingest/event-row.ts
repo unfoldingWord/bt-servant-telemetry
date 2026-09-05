@@ -48,6 +48,7 @@ export const FACT_COLUMNS = [
   'text_status',
   'engine_version',
   'tool_calls',
+  'error_type',
 ] as const;
 
 export type FactColumn = (typeof FACT_COLUMNS)[number];
@@ -114,6 +115,7 @@ function factRecord(evt: CleanEvent): Record<FactColumn, unknown> {
     text_status: evt.text_status,
     engine_version: evt.engine_version,
     tool_calls: toolCallsToJson(evt),
+    error_type: evt.error_type,
   };
 }
 
@@ -192,6 +194,7 @@ export function rowToCleanEvent(row: EventRow): CleanEvent {
     text_status: str(row.text_status),
     engine_version: str(row.engine_version),
     tool_calls: toolCallsFromJson(row.tool_calls),
+    error_type: str(row.error_type),
     session_id: row.session_id,
     session_turn_index: row.session_turn_index,
   };

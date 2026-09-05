@@ -79,6 +79,19 @@ function num(value: number | null): number | undefined {
   return value === null ? undefined : value;
 }
 
+/** A turn that failed for good never answered: no tokens, no steps, an error flag instead. */
+function failed(evt: CleanEvent): boolean {
+  return evt.exit_reason === 'error';
+}
+
+/**
+ * PostHog wants token counts on every generation; a failed turn has none, so
+ * it reports zero rather than nothing and stays a valid, countable generation.
+ */
+function tokens(evt: CleanEvent, value: number | null): number | undefined {
+  return failed(evt) ? (value ?? 0) : num(value);
+}
+
 /** Drop `undefined` and `null` so the event payload stays compact and typed. */
 function compact(obj: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -133,8 +146,8 @@ export function toGenerationProperties(
     session_turn_index: num(evt.session_turn_index),
     $ai_model: evt.model,
     $ai_provider: 'anthropic',
-    $ai_input_tokens: num(evt.input_tokens),
-    $ai_output_tokens: num(evt.output_tokens),
+    $ai_input_tokens: tokens(evt, evt.input_tokens),
+    $ai_output_tokens: tokens(evt, evt.output_tokens),
     $ai_cache_read_input_tokens: num(evt.cache_read_input_tokens),
     $ai_cache_creation_input_tokens: num(evt.cache_creation_input_tokens),
     $ai_latency: evt.duration_ms === null ? undefined : evt.duration_ms / 1000,
@@ -154,6 +167,10 @@ export function toGenerationProperties(
     edge_country: evt.edge_country,
     iterations: num(evt.iterations),
     exit_reason: evt.exit_reason,
+    // Failed turns: PostHog's own error flag, so Errors and error-rate filters see them.
+    $ai_is_error: failed(evt) ? true : undefined,
+    $ai_error: failed(evt) ? (evt.error_type ?? 'error') : undefined,
+    error_type: evt.error_type,
     stop_reason: evt.stop_reason,
     mcp_calls_made: num(evt.mcp_calls_made),
     billable_input_tokens: num(evt.billable_input_tokens),
@@ -169,7 +186,7 @@ export function toGenerationProperties(
     // ── conversation: tool_use blocks + scrubbed text, when present ──
     ...conversationProperties(evt, text),
     // Person properties kept current on every turn; drives cohorts (Q9).
-    $set: compact({ org: evt.org, client_id: evt.client_id }),
+    $set: compact({ org: evt.org, client_id: evt.client_id, user_country: evt.user_country }),
   });
 }
 
