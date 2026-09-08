@@ -1,7 +1,8 @@
-import { PostHog } from 'posthog-node';
+import { PostHog, type PostHogOptions } from 'posthog-node';
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
 import { EVENT_COLUMN_LIST, rowToCleanEvent, type EventRow } from './event-row.js';
 import { DELETE_TEXT, loadSpooledText, sweepExpiredText, type SpooledText } from './text.js';
+import { MAX_TOOL_CALLS, toolCallUuid, toolNames, toolUseBlocks } from './tool-calls.js';
 
 /**
  * PostHog AI-observability emitter.
@@ -19,13 +20,21 @@ import { DELETE_TEXT, loadSpooledText, sweepExpiredText, type SpooledText } from
  * property. A second plain event per turn would double the identified-event
  * bill for no new information.
  *
+ * Tool calls ride the same turn, two ways (ingest/tool-calls.ts). The
+ * generation's assistant message carries them as Anthropic-style `tool_use`
+ * blocks — names only, empty inputs — which is what PostHog's Tools tab and
+ * its "tool calls recorded" check read. And each call is also its own
+ * `$ai_span` under the turn's trace, which is what draws the trace tree and
+ * waterfall: "looked up Luke 2:3, then answered". Spans are extra events, so a
+ * turn with two lookups bills as three events, not one.
+ *
  * Message text travels separately from the turn facts. Tail ingest scrubs
  * personal names and contact details out of the user's message and the
  * assistant's reply (ingest/scrub.ts) and spools ONLY the scrubbed text
- * (ingest/text.ts). The
- * sender attaches it as `$ai_input` / `$ai_output_choices` and deletes the
- * spooled row once PostHog accepts the turn. `CleanEvent` never carries text,
- * so the events table cannot; `text_status` records why a turn has or lacks it.
+ * (ingest/text.ts). The sender attaches it as `$ai_input` and as the text
+ * block of `$ai_output_choices`, and deletes the spooled row once PostHog
+ * accepts the turn. `CleanEvent` never carries text, so the events table
+ * cannot; `text_status` records why a turn has or lacks it.
  *
  * Delivery is QUEUED, not inline. A turn's session_id / session_turn_index
  * can still change for a moment after it lands - a late or concurrent sibling
@@ -40,7 +49,8 @@ import { DELETE_TEXT, loadSpooledText, sweepExpiredText, type SpooledText } from
  *
  * One sender means no claim or lease is needed: ticks do not overlap, and a
  * tick that dies mid-send simply leaves its rows unmarked for the next one.
- * `turn_id` as the event uuid makes the resulting resend idempotent.
+ * `turn_id` as the event uuid — and a uuid derived from it for every span —
+ * makes the resulting resend idempotent.
  */
 
 export type PostHogEnv = {
@@ -64,9 +74,49 @@ export function posthogSettleMs(raw: string | undefined): number {
 /** Turns sent per tick. Bounds one invocation's work; the rest wait for the next. */
 export const FLUSH_LIMIT = 200;
 
+/** Events one turn can enqueue: its `$ai_generation` plus one `$ai_span` per tool call. */
+export const MAX_EVENTS_PER_TURN = MAX_TOOL_CALLS + 1;
+
+/**
+ * Ceiling for the SDK's in-memory queue, sized to the largest fan-out a tick
+ * can legally produce.
+ *
+ * This is a correctness setting, not a tuning knob. posthog-node defaults it
+ * to 10,000 and, once the queue is full, SHIFTS THE OLDEST EVENT OUT with only
+ * a log warning — no `error` on the emitter, no rejected `shutdown()`. The
+ * drop is therefore invisible to `sendGenerations`, which would return
+ * successfully and let `flushQueuedTurns` mark every turn emitted and delete
+ * its spooled text: permanent, silent loss. FLUSH_LIMIT turns each carrying
+ * MAX_TOOL_CALLS calls reach 10,200 events, past that default, so the ceiling
+ * is derived from the same two caps and cannot drift away from them.
+ */
+export const POSTHOG_MAX_QUEUE_SIZE = FLUSH_LIMIT * MAX_EVENTS_PER_TURN;
+
+/**
+ * Turns enqueued before the client is drained. Peak memory, not correctness:
+ * POSTHOG_MAX_QUEUE_SIZE is what makes a drop impossible, and a chunk that
+ * drains only partially is simply picked up by the next chunk's flush or by
+ * the final `shutdown()`. Chunking keeps the SDK's copy of a tick down to one
+ * chunk's fan-out instead of all 10,200 events at once.
+ */
+export const SEND_CHUNK_TURNS = 25;
+
 /** Anthropic reports these as `number | null`; PostHog wants numbers or nothing. */
 function num(value: number | null): number | undefined {
   return value === null ? undefined : value;
+}
+
+/** A turn that failed for good never answered: no tokens, no steps, an error flag instead. */
+function failed(evt: CleanEvent): boolean {
+  return evt.exit_reason === 'error';
+}
+
+/**
+ * PostHog wants token counts on every generation; a failed turn has none, so
+ * it reports zero rather than nothing and stays a valid, countable generation.
+ */
+function tokens(evt: CleanEvent, value: number | null): number | undefined {
+  return failed(evt) ? (value ?? 0) : num(value);
 }
 
 /** Drop `undefined` and `null` so the event payload stays compact and typed. */
@@ -78,13 +128,22 @@ function compact(obj: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-/** PostHog's conversation shape for the one exchange this turn is. */
-function conversationProperties(text: SpooledText | undefined): Record<string, unknown> {
-  if (!text) return {};
-  return {
-    $ai_input: [{ role: 'user', content: text.user_message }],
-    $ai_output_choices: [{ role: 'assistant', content: text.assistant_reply }],
-  };
+/**
+ * PostHog's conversation shape for the turn. The assistant message carries the
+ * orchestrator's tool calls as `tool_use` blocks and, when text was spooled,
+ * the scrubbed reply as its text block; the user message appears only when
+ * text was spooled. A turn with neither has no conversation to show.
+ */
+function conversationProperties(
+  evt: CleanEvent,
+  text: SpooledText | undefined
+): Record<string, unknown> {
+  const content: unknown[] = toolUseBlocks(evt);
+  if (text) content.push({ type: 'text', text: text.assistant_reply });
+  return compact({
+    $ai_input: text ? [{ role: 'user', content: text.user_message }] : undefined,
+    $ai_output_choices: content.length > 0 ? [{ role: 'assistant', content }] : undefined,
+  });
 }
 
 /**
@@ -105,6 +164,7 @@ export function toGenerationProperties(
   evt: CleanEvent,
   text?: SpooledText
 ): Record<string, unknown> {
+  const tools = toolNames(evt);
   return compact({
     // ── PostHog AI observability contract ──
     $ai_trace_id: evt.turn_id,
@@ -113,8 +173,8 @@ export function toGenerationProperties(
     session_turn_index: num(evt.session_turn_index),
     $ai_model: evt.model,
     $ai_provider: 'anthropic',
-    $ai_input_tokens: num(evt.input_tokens),
-    $ai_output_tokens: num(evt.output_tokens),
+    $ai_input_tokens: tokens(evt, evt.input_tokens),
+    $ai_output_tokens: tokens(evt, evt.output_tokens),
     $ai_cache_read_input_tokens: num(evt.cache_read_input_tokens),
     $ai_cache_creation_input_tokens: num(evt.cache_creation_input_tokens),
     $ai_latency: evt.duration_ms === null ? undefined : evt.duration_ms / 1000,
@@ -134,36 +194,85 @@ export function toGenerationProperties(
     edge_country: evt.edge_country,
     iterations: num(evt.iterations),
     exit_reason: evt.exit_reason,
+    // Failed turns: PostHog's own error flag, so Errors and error-rate filters see them.
+    $ai_is_error: failed(evt) ? true : undefined,
+    $ai_error: failed(evt) ? (evt.error_type ?? 'error') : undefined,
+    error_type: evt.error_type,
     stop_reason: evt.stop_reason,
     mcp_calls_made: num(evt.mcp_calls_made),
     billable_input_tokens: num(evt.billable_input_tokens),
     had_inbound_voice: evt.had_inbound_voice,
     had_outbound_voice: evt.had_outbound_voice,
+    // Which engine build answered, so any chart can be split by deploy.
+    engine_version: evt.engine_version,
+    // Tool names in call order, for plain breakdowns; the Tools tab reads the blocks below.
+    tools_called: tools.length > 0 ? tools : undefined,
+    tool_call_count: evt.tool_calls === null ? undefined : evt.tool_calls.length,
     // Why this turn does or does not carry conversation text (ingest/text.ts).
     text_status: evt.text_status,
-    // ── conversation text (scrubbed at ingest; present only when spooled) ──
-    ...conversationProperties(text),
+    // ── conversation: tool_use blocks + scrubbed text, when present ──
+    ...conversationProperties(evt, text),
     // Person properties kept current on every turn; drives cohorts (Q9).
-    $set: compact({ org: evt.org, client_id: evt.client_id }),
+    $set: compact({ org: evt.org, client_id: evt.client_id, user_country: evt.user_country }),
+  });
+}
+
+/** One `$ai_span` per tool call, parented to the turn's trace. */
+export function toToolCallSpans(
+  evt: CleanEvent
+): Array<{ uuid: string; timestamp: Date; properties: Record<string, unknown> }> {
+  return (evt.tool_calls ?? []).map((call, i) => {
+    const uuid = toolCallUuid(evt.turn_id as string, i);
+    return {
+      uuid,
+      timestamp: new Date(call.started_at),
+      properties: compact({
+        $ai_trace_id: evt.turn_id,
+        $ai_span_id: uuid,
+        $ai_parent_id: evt.turn_id,
+        $ai_span_name: call.name,
+        $ai_session_id: evt.session_id,
+        $ai_latency: call.duration_ms / 1000,
+        $ai_is_error: !call.ok,
+        tool_name: call.name,
+        server_id: call.server_id,
+        // Which host tool ran this call, if any — the direct-vs-sandbox split.
+        via: call.via,
+        turn_id: evt.turn_id,
+        org: evt.org,
+        client_id: evt.client_id,
+        engine_version: evt.engine_version,
+      }),
+    };
   });
 }
 
 /**
- * Build a client for ONE invocation. Never a module singleton: PostHog's
- * default batching is `setTimeout`-driven and does not fire reliably in
- * workerd, so we flush on every capture and drain explicitly at the end.
- * The `fetch` wrapper must be an arrow — posthog-node calls it as a method on
- * its options object, and the bare native function throws "Illegal invocation".
+ * The client's options, exported so a test can drive the REAL client with the
+ * REAL settings — the queue ceiling below is only worth anything if what ships
+ * and what is tested are the same object.
+ *
+ * PostHog's default batching is `setTimeout`-driven and does not fire reliably
+ * in workerd, so we flush on every capture and drain explicitly instead. The
+ * `fetch` wrapper must be an arrow — posthog-node calls it as a method on its
+ * options object, and the bare native function throws "Illegal invocation".
  */
-function createClient(env: PostHogEnv): PostHog | null {
-  if (!env.POSTHOG_API_KEY) return null;
-  return new PostHog(env.POSTHOG_API_KEY, {
+export function posthogClientOptions(env: PostHogEnv): PostHogOptions {
+  return {
     host: env.POSTHOG_HOST ?? 'https://us.i.posthog.com',
     flushAt: 1,
     flushInterval: 0,
+    // Above the worst legal fan-out: the default silently drops. See the constant.
+    maxQueueSize: POSTHOG_MAX_QUEUE_SIZE,
     disableGeoip: true, // would geolocate the Cloudflare colo, not the user
     fetch: (url, options) => fetch(url, options),
-  });
+  };
+}
+
+/** Build a client for ONE invocation. Never a module singleton. */
+function createClient(env: PostHogEnv): PostHog | null {
+  if (!env.POSTHOG_API_KEY) return null;
+  return new PostHog(env.POSTHOG_API_KEY, posthogClientOptions(env));
 }
 
 /**
@@ -193,6 +302,36 @@ function warn(event: string, turns: number, error: unknown): void {
   );
 }
 
+/** Capture one turn: its tool-call spans first, then the generation they belong to. */
+function captureTurn(
+  client: PostHog,
+  evt: CleanEvent,
+  text: SpooledText | undefined,
+  env: PostHogEnv
+): void {
+  const distinctId = evt.user_hash as string;
+  // Event-level, never $set: the same person can appear in both environments.
+  const environment = env.ENVIRONMENT ? { environment: env.ENVIRONMENT } : {};
+  for (const span of toToolCallSpans(evt)) {
+    client.capture({
+      distinctId,
+      event: '$ai_span',
+      properties: { ...span.properties, ...environment },
+      timestamp: span.timestamp,
+      uuid: span.uuid,
+    });
+  }
+  client.capture({
+    distinctId,
+    event: '$ai_generation',
+    properties: { ...toGenerationProperties(evt, text), ...environment },
+    timestamp: new Date(evt.ts),
+    // turn_id is a UUID minted per turn by the engine. Using it as the
+    // event uuid makes a retried or replayed send idempotent in PostHog.
+    uuid: evt.turn_id as string,
+  });
+}
+
 /** Capture every turn and drain the client; throws if PostHog rejected the batch. */
 async function sendGenerations(
   client: PostHog,
@@ -206,33 +345,30 @@ async function sendGenerations(
   client.on('error', (error: unknown) => {
     failure = error;
   });
-  for (const evt of turns) {
-    const properties = toGenerationProperties(evt, texts.get(evt.turn_id as string));
-    // Event-level, never $set: the same person can appear in both environments.
-    if (env.ENVIRONMENT) properties.environment = env.ENVIRONMENT;
-    client.capture({
-      distinctId: evt.user_hash as string,
-      event: '$ai_generation',
-      properties,
-      timestamp: new Date(evt.ts),
-      // turn_id is a UUID minted per turn by the engine. Using it as the
-      // event uuid makes a retried or replayed send idempotent in PostHog.
-      uuid: evt.turn_id as string,
-    });
+  // Enqueue a chunk, drain, repeat, so the queue holds one chunk's fan-out
+  // rather than the whole tick's. A flush that rejects propagates instead of
+  // shutting down: the tick has already failed, nothing will be marked, and a
+  // second drain would only replay the same retries against a dead endpoint.
+  for (let i = 0; i < turns.length; i += SEND_CHUNK_TURNS) {
+    for (const evt of turns.slice(i, i + SEND_CHUNK_TURNS)) {
+      captureTurn(client, evt, texts.get(evt.turn_id as string), env);
+    }
+    await client.flush();
   }
   await client.shutdown();
   if (failure !== null) throw failure;
 }
 
 /**
- * Emit every settled, unsent turn as an `$ai_generation`. Runs from the
- * once-a-minute cron and nowhere else.
+ * Emit every settled, unsent turn as an `$ai_generation` (plus one `$ai_span`
+ * per tool call). Runs from the once-a-minute cron and nowhere else.
  *
  * Fails OPEN with respect to ingest: D1 is the durable record and was written
  * by the tail handler long before this runs. Delivery itself is at-least-once:
  * a turn is marked emitted only after PostHog accepts it, so a tick that
  * fails or dies leaves its rows for the next tick, and `turn_id` as the event
- * uuid makes the resend idempotent in PostHog.
+ * uuid — with span uuids derived from it — makes the resend idempotent in
+ * PostHog.
  *
  * Spooled conversation text rides along with its turn and is deleted in the
  * same batch that marks the turn emitted. Text that never gets sent is swept

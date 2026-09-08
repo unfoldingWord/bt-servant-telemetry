@@ -1,5 +1,6 @@
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
 import { NO_TURN_FACTS } from '@bt-servant-telemetry/shared';
+import { parseToolCalls } from './tool-calls.js';
 
 /**
  * The `events` table's fact columns - everything except the two derived
@@ -45,6 +46,9 @@ export const FACT_COLUMNS = [
   'had_inbound_voice',
   'had_outbound_voice',
   'text_status',
+  'engine_version',
+  'tool_calls',
+  'error_type',
 ] as const;
 
 export type FactColumn = (typeof FACT_COLUMNS)[number];
@@ -56,6 +60,21 @@ function boolToInt(value: boolean | null): number | null {
 
 function intToBool(value: number | null): boolean | null {
   return value === null ? null : value !== 0;
+}
+
+/** The one JSON column: a validated array in, its text form out. */
+function toolCallsToJson(evt: CleanEvent): string | null {
+  return evt.tool_calls === null ? null : JSON.stringify(evt.tool_calls);
+}
+
+/** Inverse of toolCallsToJson; a corrupt cell reads as null rather than throwing. */
+function toolCallsFromJson(value: unknown): CleanEvent['tool_calls'] {
+  if (typeof value !== 'string') return null;
+  try {
+    return parseToolCalls(JSON.parse(value));
+  } catch {
+    return null;
+  }
 }
 
 function factRecord(evt: CleanEvent): Record<FactColumn, unknown> {
@@ -94,6 +113,9 @@ function factRecord(evt: CleanEvent): Record<FactColumn, unknown> {
     had_inbound_voice: boolToInt(evt.had_inbound_voice),
     had_outbound_voice: boolToInt(evt.had_outbound_voice),
     text_status: evt.text_status,
+    engine_version: evt.engine_version,
+    tool_calls: toolCallsToJson(evt),
+    error_type: evt.error_type,
   };
 }
 
@@ -170,6 +192,9 @@ export function rowToCleanEvent(row: EventRow): CleanEvent {
     had_inbound_voice: intToBool(num(row.had_inbound_voice)),
     had_outbound_voice: intToBool(num(row.had_outbound_voice)),
     text_status: str(row.text_status),
+    engine_version: str(row.engine_version),
+    tool_calls: toolCallsFromJson(row.tool_calls),
+    error_type: str(row.error_type),
     session_id: row.session_id,
     session_turn_index: row.session_turn_index,
   };

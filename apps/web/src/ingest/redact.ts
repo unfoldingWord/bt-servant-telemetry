@@ -1,4 +1,5 @@
 import { isKnownEvent, type CleanEvent, type TurnFacts } from '@bt-servant-telemetry/shared';
+import { parseToolCalls } from './tool-calls.js';
 
 /**
  * The ingest boundary. Every log entry from bt-servant-worker passes through
@@ -85,6 +86,11 @@ function extractTurnFacts(obj: Record<string, unknown>): TurnFacts {
     had_outbound_voice: asBool(obj.had_outbound_voice),
     // Not on the wire. Stamped by the tail handler once the text has been scrubbed (ingest/text.ts).
     text_status: null,
+    engine_version: asString(obj.engine_version),
+    // Validated item by item; argument blobs, if an engine ever sent any, are dropped here.
+    tool_calls: parseToolCalls(obj.tool_calls),
+    // Failed turns only (exit_reason = error): the engine's bounded error class or code.
+    error_type: asString(obj.error_type),
     // Not on the wire. Derived during ingest by insertTurn() from prior turns.
     session_id: null,
     session_turn_index: null,

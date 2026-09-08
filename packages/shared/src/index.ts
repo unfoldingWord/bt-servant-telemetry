@@ -1,5 +1,5 @@
 export { KNOWN_EVENTS, isKnownEvent, type KnownEvent } from './log-events.js';
-export type { CleanEvent, TurnFacts } from './types.js';
+export type { CleanEvent, ToolCallRecord, TurnFacts } from './types.js';
 export { NO_TURN_FACTS } from './types.js';
 export type {
   EventHeatmapPayload,
