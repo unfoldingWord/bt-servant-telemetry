@@ -16,8 +16,12 @@
  *   6. Tool calls arrive twice from one list — as `tool_use` blocks on the
  *      generation and as one `$ai_span` each — with ids derived from the turn,
  *      so a resend is idempotent and arguments never travel.
+ *   7. A tick never returns success having dropped events: the client's queue
+ *      is sized above the largest fan-out a tick can legally produce, because
+ *      the SDK discards its oldest event silently once that queue is full.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+import { PostHog } from 'posthog-node';
 import {
   env,
   applyD1Migrations,
@@ -31,12 +35,17 @@ import {
   type ScheduledEnv,
 } from '../../src/scheduled/index.js';
 import {
+  FLUSH_LIMIT,
+  MAX_EVENTS_PER_TURN,
+  POSTHOG_MAX_QUEUE_SIZE,
+  SEND_CHUNK_TURNS,
   flushQueuedTurns,
+  posthogClientOptions,
   toGenerationProperties,
   type PostHogEnv,
 } from '../../src/ingest/posthog.js';
 import { redact } from '../../src/ingest/redact.js';
-import { toolCallUuid } from '../../src/ingest/tool-calls.js';
+import { MAX_TOOL_CALLS, toolCallUuid } from '../../src/ingest/tool-calls.js';
 import { buildTraceItems, sampleLogMessages } from '../fixtures/sample-tail-events.js';
 
 declare module 'cloudflare:test' {
@@ -736,5 +745,56 @@ describe('tool calls', () => {
     expect(p).not.toHaveProperty('tools_called');
     expect(p).not.toHaveProperty('tool_call_count');
     expect(p).not.toHaveProperty('$ai_output_choices');
+  });
+});
+
+describe('fan-out never outgrows the client queue', () => {
+  it('sizes the queue above the largest fan-out a tick can legally produce', () => {
+    expect(MAX_EVENTS_PER_TURN).toBe(MAX_TOOL_CALLS + 1);
+    expect(POSTHOG_MAX_QUEUE_SIZE).toBeGreaterThanOrEqual(FLUSH_LIMIT * MAX_EVENTS_PER_TURN);
+  });
+
+  it('delivers every event at that maximum rather than silently dropping the oldest', async () => {
+    // The failure this pins: posthog-node's default 10,000-event queue shifts
+    // its oldest entry out with only a log warning once full — no emitter
+    // error, no rejected shutdown — so the tick would report success and mark
+    // turns emitted that PostHog never received. Drive the REAL client with
+    // the REAL options at exactly the worst legal load and count what lands.
+    const seen = stubPostHogFetch();
+    const client = new PostHog('phc_test_key', posthogClientOptions(withPostHog));
+    for (let i = 0; i < POSTHOG_MAX_QUEUE_SIZE; i++) {
+      client.capture({ distinctId: 'u', event: '$ai_span', properties: { i } });
+    }
+    await client.shutdown();
+
+    const spans = spansFrom(seen);
+    expect(spans).toHaveLength(POSTHOG_MAX_QUEUE_SIZE);
+    // Nothing shifted off the front: the very first event survived.
+    expect((spans[0]?.properties as R).i).toBe(0);
+  });
+
+  it('sends every turn of a tick that spans several chunks, and marks them all emitted', async () => {
+    const seen = stubPostHogFetch();
+    const ts = NOW - MIN;
+    // Short names on purpose: U() packs them into a UUID's last twelve hex digits.
+    const names = Array.from({ length: SEND_CHUNK_TURNS + 5 }, (_, i) => `t${i}`);
+    await runTailAt(
+      withPostHog,
+      names.map((n) => toolTurn(turnMessage(n, ts), ts)),
+      NOW
+    );
+    expect(await flushQueuedTurns(env.DB, withPostHog, NOW)).toBe(names.length);
+
+    // Two tool calls per turn: one generation and two spans each, none lost at
+    // a chunk boundary, and every turn's own uuid present exactly once.
+    expect(generationsFrom(seen)).toHaveLength(names.length);
+    expect(spansFrom(seen)).toHaveLength(names.length * 2);
+    expect(new Set(generationsFrom(seen).map((g) => g.uuid))).toEqual(
+      new Set(names.map((n) => U(n)))
+    );
+    const row = await env.DB.prepare(
+      "SELECT count(*) AS n FROM events WHERE event = 'chat_turn' AND posthog_emitted_at IS NULL"
+    ).first<{ n: number }>();
+    expect(row?.n).toBe(0);
   });
 });

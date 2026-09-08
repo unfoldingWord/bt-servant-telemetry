@@ -1,8 +1,8 @@
-import { PostHog } from 'posthog-node';
+import { PostHog, type PostHogOptions } from 'posthog-node';
 import type { CleanEvent } from '@bt-servant-telemetry/shared';
 import { EVENT_COLUMN_LIST, rowToCleanEvent, type EventRow } from './event-row.js';
 import { DELETE_TEXT, loadSpooledText, sweepExpiredText, type SpooledText } from './text.js';
-import { toolCallUuid, toolNames, toolUseBlocks } from './tool-calls.js';
+import { MAX_TOOL_CALLS, toolCallUuid, toolNames, toolUseBlocks } from './tool-calls.js';
 
 /**
  * PostHog AI-observability emitter.
@@ -73,6 +73,33 @@ export function posthogSettleMs(raw: string | undefined): number {
 
 /** Turns sent per tick. Bounds one invocation's work; the rest wait for the next. */
 export const FLUSH_LIMIT = 200;
+
+/** Events one turn can enqueue: its `$ai_generation` plus one `$ai_span` per tool call. */
+export const MAX_EVENTS_PER_TURN = MAX_TOOL_CALLS + 1;
+
+/**
+ * Ceiling for the SDK's in-memory queue, sized to the largest fan-out a tick
+ * can legally produce.
+ *
+ * This is a correctness setting, not a tuning knob. posthog-node defaults it
+ * to 10,000 and, once the queue is full, SHIFTS THE OLDEST EVENT OUT with only
+ * a log warning — no `error` on the emitter, no rejected `shutdown()`. The
+ * drop is therefore invisible to `sendGenerations`, which would return
+ * successfully and let `flushQueuedTurns` mark every turn emitted and delete
+ * its spooled text: permanent, silent loss. FLUSH_LIMIT turns each carrying
+ * MAX_TOOL_CALLS calls reach 10,200 events, past that default, so the ceiling
+ * is derived from the same two caps and cannot drift away from them.
+ */
+export const POSTHOG_MAX_QUEUE_SIZE = FLUSH_LIMIT * MAX_EVENTS_PER_TURN;
+
+/**
+ * Turns enqueued before the client is drained. Peak memory, not correctness:
+ * POSTHOG_MAX_QUEUE_SIZE is what makes a drop impossible, and a chunk that
+ * drains only partially is simply picked up by the next chunk's flush or by
+ * the final `shutdown()`. Chunking keeps the SDK's copy of a tick down to one
+ * chunk's fan-out instead of all 10,200 events at once.
+ */
+export const SEND_CHUNK_TURNS = 25;
 
 /** Anthropic reports these as `number | null`; PostHog wants numbers or nothing. */
 function num(value: number | null): number | undefined {
@@ -219,21 +246,31 @@ export function toToolCallSpans(
 }
 
 /**
- * Build a client for ONE invocation. Never a module singleton: PostHog's
- * default batching is `setTimeout`-driven and does not fire reliably in
- * workerd, so we flush on every capture and drain explicitly at the end.
- * The `fetch` wrapper must be an arrow — posthog-node calls it as a method on
- * its options object, and the bare native function throws "Illegal invocation".
+ * The client's options, exported so a test can drive the REAL client with the
+ * REAL settings — the queue ceiling below is only worth anything if what ships
+ * and what is tested are the same object.
+ *
+ * PostHog's default batching is `setTimeout`-driven and does not fire reliably
+ * in workerd, so we flush on every capture and drain explicitly instead. The
+ * `fetch` wrapper must be an arrow — posthog-node calls it as a method on its
+ * options object, and the bare native function throws "Illegal invocation".
  */
-function createClient(env: PostHogEnv): PostHog | null {
-  if (!env.POSTHOG_API_KEY) return null;
-  return new PostHog(env.POSTHOG_API_KEY, {
+export function posthogClientOptions(env: PostHogEnv): PostHogOptions {
+  return {
     host: env.POSTHOG_HOST ?? 'https://us.i.posthog.com',
     flushAt: 1,
     flushInterval: 0,
+    // Above the worst legal fan-out: the default silently drops. See the constant.
+    maxQueueSize: POSTHOG_MAX_QUEUE_SIZE,
     disableGeoip: true, // would geolocate the Cloudflare colo, not the user
     fetch: (url, options) => fetch(url, options),
-  });
+  };
+}
+
+/** Build a client for ONE invocation. Never a module singleton. */
+function createClient(env: PostHogEnv): PostHog | null {
+  if (!env.POSTHOG_API_KEY) return null;
+  return new PostHog(env.POSTHOG_API_KEY, posthogClientOptions(env));
 }
 
 /**
@@ -306,7 +343,16 @@ async function sendGenerations(
   client.on('error', (error: unknown) => {
     failure = error;
   });
-  for (const evt of turns) captureTurn(client, evt, texts.get(evt.turn_id as string), env);
+  // Enqueue a chunk, drain, repeat, so the queue holds one chunk's fan-out
+  // rather than the whole tick's. A flush that rejects propagates instead of
+  // shutting down: the tick has already failed, nothing will be marked, and a
+  // second drain would only replay the same retries against a dead endpoint.
+  for (let i = 0; i < turns.length; i += SEND_CHUNK_TURNS) {
+    for (const evt of turns.slice(i, i + SEND_CHUNK_TURNS)) {
+      captureTurn(client, evt, texts.get(evt.turn_id as string), env);
+    }
+    await client.flush();
+  }
   await client.shutdown();
   if (failure !== null) throw failure;
 }
