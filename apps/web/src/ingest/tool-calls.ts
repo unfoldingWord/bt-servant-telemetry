@@ -71,15 +71,35 @@ export function parseToolCalls(raw: unknown): ToolCallRecord[] | null {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Deterministic id for the i-th tool call of a turn: the turn's UUID with its
- * last four hex digits replaced by the index. Same turn, same index, same id —
- * so a resent batch is idempotent in PostHog, exactly like the generation whose
- * uuid is the turn_id itself. A turn_id that is not a UUID (never in production,
- * where the engine mints one) falls back to a random id.
+ * The nibble every derived span id flips: string offset 24, the first hex digit
+ * of a UUID's final group. Random payload in a v4 id — not the version or
+ * variant marker — so flipping it leaves a well-formed UUID.
+ */
+const SPAN_NIBBLE = 24;
+
+/**
+ * Deterministic id for the i-th tool call of a turn: the turn's UUID with one
+ * nibble flipped and its last four hex digits replaced by the index. Same turn,
+ * same index, same id — so a resent batch is idempotent in PostHog, exactly
+ * like the generation whose uuid is the turn_id itself.
+ *
+ * The flip is what keeps a span's id off the generation's. Replacing the last
+ * four digits alone does not: the first call of a turn whose UUID ends in
+ * `0000` would get back exactly the turn_id, and PostHog — which deduplicates
+ * on event uuid — would then keep one of the two events and discard the other.
+ * XOR always changes the nibble, so a derived id differs from its parent at
+ * offset 24 no matter what the engine minted, and the index keeps the spans of
+ * one turn distinct from each other.
+ *
+ * A turn_id that is not a UUID (never in production, where the engine mints
+ * one) falls back to a random id.
  */
 export function toolCallUuid(turnId: string, index: number): string {
   if (!UUID_RE.test(turnId)) return crypto.randomUUID();
-  return `${turnId.slice(0, 32)}${index.toString(16).padStart(4, '0')}`;
+  const id = turnId.toLowerCase();
+  const flipped = (parseInt(id[SPAN_NIBBLE] as string, 16) ^ 0x8).toString(16);
+  const head = `${id.slice(0, SPAN_NIBBLE)}${flipped}${id.slice(SPAN_NIBBLE + 1, 32)}`;
+  return `${head}${index.toString(16).padStart(4, '0')}`;
 }
 
 /**

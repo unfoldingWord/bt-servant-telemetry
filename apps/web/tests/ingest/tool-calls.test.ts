@@ -93,11 +93,34 @@ describe('parseToolCalls', () => {
 describe('toolCallUuid', () => {
   it('derives a valid, deterministic UUID from the turn id and index', () => {
     const a = toolCallUuid(TURN, 0);
-    expect(a).toBe('7ca7aedd-cc08-494d-9102-a1277a0f0000');
+    // The turn id with nibble 24 flipped (a -> 2) and the index in the last four.
+    expect(a).toBe('7ca7aedd-cc08-494d-9102-21277a0f0000');
     expect(toolCallUuid(TURN, 0)).toBe(a);
-    expect(toolCallUuid(TURN, 1)).toBe('7ca7aedd-cc08-494d-9102-a1277a0f0001');
-    expect(toolCallUuid(TURN, 17)).toBe('7ca7aedd-cc08-494d-9102-a1277a0f0011');
+    expect(toolCallUuid(TURN, 1)).toBe('7ca7aedd-cc08-494d-9102-21277a0f0001');
+    expect(toolCallUuid(TURN, 17)).toBe('7ca7aedd-cc08-494d-9102-21277a0f0011');
     expect(a).not.toBe(TURN); // never collides with the generation's own uuid
+  });
+
+  it('stays off the generation uuid even for the turn ids that used to collide', () => {
+    // Replacing only the last four digits handed call i the turn's own uuid
+    // whenever the turn ended in that index; PostHog dedupes on uuid, so one of
+    // the two events would have been discarded. Every index must now differ.
+    for (const [turn, index] of [
+      ['00000000-0000-4000-8000-000000000000', 0],
+      ['7ca7aedd-cc08-494d-9102-a1277a0f0000', 0],
+      ['7ca7aedd-cc08-494d-9102-a1277a0f0001', 1],
+      ['7ca7aedd-cc08-494d-9102-a1277a0f0031', MAX_TOOL_CALLS - 1],
+    ] as Array<[string, number]>) {
+      expect(toolCallUuid(turn, index)).not.toBe(turn);
+    }
+  });
+
+  it('gives every call of a turn its own id, across the whole legal range', () => {
+    const ids = Array.from({ length: MAX_TOOL_CALLS }, (_, i) => toolCallUuid(TURN, i));
+    expect(new Set(ids).size).toBe(MAX_TOOL_CALLS);
+    expect(ids).not.toContain(TURN);
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    for (const id of ids) expect(id).toMatch(uuid);
   });
 
   it('falls back to a random UUID when the turn id is not one', () => {
