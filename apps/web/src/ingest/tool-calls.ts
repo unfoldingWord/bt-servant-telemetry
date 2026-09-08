@@ -4,9 +4,10 @@ import type { CleanEvent, ToolCallRecord } from '@bt-servant-telemetry/shared';
  * Tool calls on a turn: parsing what the engine put on `chat_turn.tool_calls`,
  * and the two PostHog shapes built from it.
  *
- * The engine records each call as name, MCP server, start, duration and
- * outcome — never arguments or results, which can carry user text — so this
- * module needs no scrubbing and nothing here is ever withheld.
+ * The engine records each call as name, MCP server, the host tool it was made
+ * from inside (`via`), start, duration and outcome — never arguments or
+ * results, which can carry user text — so this module needs no scrubbing and
+ * nothing here is ever withheld.
  *
  * Why two shapes: PostHog's Tools tab (and its "tool calls recorded" check)
  * reads tool calls out of a generation's OUTPUT, as Anthropic-style
@@ -43,6 +44,9 @@ function asToolCall(item: unknown): ToolCallRecord | null {
   return {
     name: o.name,
     server_id: typeof o.server_id === 'string' ? o.server_id : null,
+    // A tool name the engine chose, like `server_id` — bounded by construction,
+    // never user text. Absent on records from an engine that predates it.
+    via: typeof o.via === 'string' ? o.via : null,
     started_at: o.started_at,
     duration_ms: o.duration_ms,
     ok: o.ok,

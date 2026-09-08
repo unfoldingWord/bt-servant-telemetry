@@ -7,6 +7,14 @@ export type ToolCallRecord = {
   name: string;
   /** MCP server that owns the tool; null for engine-hosted tools. */
   server_id: string | null;
+  /**
+   * Host tool the call was made from INSIDE — `'execute_code'` for one the
+   * engine's sandbox made through a host function — or null when the model
+   * called the tool directly. Without it a sandbox-driven `fetch_scripture` is
+   * indistinguishable from a top-level one, and a turn's list reads as if the
+   * model asked for both.
+   */
+  via: string | null;
   /** Epoch ms when the call started. */
   started_at: number;
   duration_ms: number;

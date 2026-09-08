@@ -1,9 +1,9 @@
 /**
  * Tool calls on a turn (ingest/tool-calls.ts).
  *
- * The engine sends names, servers and timings; nothing else may get through.
- * Three properties matter: a malformed or over-long list is trimmed rather
- * than trusted, ids are deterministic so a resend is idempotent, and the
+ * The engine sends names, servers, `via` and timings; nothing else may get
+ * through. Three properties matter: a malformed or over-long list is trimmed
+ * rather than trusted, ids are deterministic so a resend is idempotent, and the
  * `tool_use` blocks PostHog reads carry names with empty inputs.
  */
 import { describe, it, expect } from 'vitest';
@@ -20,6 +20,7 @@ const TURN = '7ca7aedd-cc08-494d-9102-a1277a0f2775';
 const CALL = {
   name: 'fetch_scripture',
   server_id: 'translation-helps',
+  via: null,
   started_at: 1_750_000_000_000,
   duration_ms: 812,
   ok: true,
@@ -48,7 +49,7 @@ function turn(tool_calls: CleanEvent['tool_calls']): CleanEvent {
 }
 
 describe('parseToolCalls', () => {
-  it('keeps exactly the five fields and drops anything else on an item', () => {
+  it('keeps exactly the six fields and drops anything else on an item', () => {
     const parsed = parseToolCalls([{ ...CALL, args: { reference: 'John 3:16' }, result: 'x' }]);
     expect(parsed).toEqual([CALL]);
     expect(JSON.stringify(parsed)).not.toContain('John 3:16');
@@ -58,6 +59,22 @@ describe('parseToolCalls', () => {
     expect(parseToolCalls([{ ...CALL, name: 'execute_code', server_id: null }])).toEqual([
       { ...CALL, name: 'execute_code', server_id: null },
     ]);
+  });
+
+  it('keeps `via`, so a call the sandbox made stays distinguishable from a direct one', () => {
+    // The engine records the execute_code wrapper AND every call the sandbox
+    // made inside it. Dropping `via` here would flatten the two into siblings
+    // and leave the downstream data unable to tell which the model asked for.
+    expect(parseToolCalls([{ ...CALL, via: 'execute_code' }])).toEqual([
+      { ...CALL, via: 'execute_code' },
+    ]);
+  });
+
+  it('reads a record from an engine that predates `via` as a direct call', () => {
+    const { via: _via, ...withoutVia } = CALL;
+    expect(parseToolCalls([withoutVia])).toEqual([CALL]);
+    // Not a string, not carried: a non-string cannot become a PostHog property.
+    expect(parseToolCalls([{ ...CALL, via: { nested: true } }])).toEqual([CALL]);
   });
 
   it('skips malformed items and returns null for a non-array', () => {

@@ -102,11 +102,15 @@ function textTurn(name: string, ts: number): string {
   return JSON.stringify(o);
 }
 
-/** Two tool calls as the engine records them: a lookup that worked, then one that failed. */
+/**
+ * Two tool calls as the engine records them: a lookup the model asked for
+ * directly that worked, then one its `execute_code` sandbox made that failed.
+ */
 const TOOL_CALLS = (ts: number): Array<Record<string, unknown>> => [
   {
     name: 'fetch_scripture',
     server_id: 'translation-helps',
+    via: null,
     started_at: ts - 3000,
     duration_ms: 812,
     ok: true,
@@ -114,6 +118,7 @@ const TOOL_CALLS = (ts: number): Array<Record<string, unknown>> => [
   {
     name: 'search_translation_notes',
     server_id: 'translation-helps',
+    via: 'execute_code',
     started_at: ts - 2000,
     duration_ms: 1500,
     ok: false,
@@ -661,6 +666,11 @@ describe('tool calls', () => {
     expect((spans[0]?.properties as R).$ai_is_error).toBe(false);
     expect((spans[1]?.properties as R).$ai_is_error).toBe(true);
     expect(spans[0]?.timestamp).toBe(new Date(ts - 3000).toISOString());
+    // `via` reaches PostHog: the sandbox call is marked, the direct one carries
+    // no property at all (compact drops nulls, as it does for a host tool's
+    // server_id). Without this the two are indistinguishable downstream.
+    expect(spans[0]?.properties as R).not.toHaveProperty('via');
+    expect((spans[1]?.properties as R).via).toBe('execute_code');
 
     // The generation: names for breakdowns, tool_use blocks for the Tools tab, the build that answered.
     const p = propsOf(seen);

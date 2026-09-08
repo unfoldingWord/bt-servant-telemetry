@@ -236,6 +236,8 @@ export function toToolCallSpans(
         $ai_is_error: !call.ok,
         tool_name: call.name,
         server_id: call.server_id,
+        // Which host tool ran this call, if any — the direct-vs-sandbox split.
+        via: call.via,
         turn_id: evt.turn_id,
         org: evt.org,
         client_id: evt.client_id,
