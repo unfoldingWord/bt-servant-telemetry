@@ -360,7 +360,7 @@ describe('tail ingest -> cron tick -> PostHog', () => {
     // PostHog comes back: the next tick sends exactly that turn.
     vi.restoreAllMocks();
     const seen = stubPostHogFetch();
-    expect(await flushQueuedTurns(env.DB, withPostHog, Date.now())).toBe(1);
+    expect((await flushQueuedTurns(env.DB, withPostHog, Date.now())).sent).toBe(1);
     expect(generationsFrom(seen).map((g) => g.uuid)).toEqual([
       '7ca7aedd-cc08-494d-9102-a1277a0f2775',
     ]);
@@ -472,12 +472,12 @@ describe('conversation text', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     stubPostHogFetch(503);
     await runTailAt(withText, [textTurn('b', NOW - MIN)], NOW);
-    expect(await flushQueuedTurns(env.DB, withText, NOW)).toBe(0);
+    expect((await flushQueuedTurns(env.DB, withText, NOW)).sent).toBe(0);
     expect(await spooledCount()).toBe(1); // nothing sent, nothing forgotten
 
     vi.restoreAllMocks();
     const seen = stubPostHogFetch();
-    expect(await flushQueuedTurns(env.DB, withText, NOW + MIN)).toBe(1);
+    expect((await flushQueuedTurns(env.DB, withText, NOW + MIN)).sent).toBe(1);
     expect(propsOf(seen).text_status).toBe('scrubbed');
     expect(propsOf(seen)).toHaveProperty('$ai_input');
     expect(await spooledCount()).toBe(0);
@@ -631,11 +631,48 @@ describe('conversation text', () => {
       .bind(U('fresh'), 'x', 'y', NOW - 60 * MIN)
       .run();
 
-    expect(await flushQueuedTurns(env.DB, env as PostHogEnv, NOW)).toBe(0); // no key: nothing sent…
+    const summary = await flushQueuedTurns(env.DB, env as PostHogEnv, NOW);
+    expect(summary.sent).toBe(0); // no key: nothing sent…
+    expect(summary.sweptText).toBe(1); // …but the day-old row is gone, and the tick says so
     const { results } = await env.DB.prepare('SELECT turn_id FROM turn_text').all<{
       turn_id: string;
     }>();
-    expect(results.map((r) => r.turn_id)).toEqual([U('fresh')]); // …but the day-old row is gone
+    expect(results.map((r) => r.turn_id)).toEqual([U('fresh')]);
+  });
+});
+
+describe('flush summary', () => {
+  // Three exits of flushQueuedTurns are silent by design. The summary is what
+  // makes them distinguishable to the cron heartbeat — see issue #42.
+  it('reports hasKey false when no POSTHOG_API_KEY is configured', async () => {
+    await runTailAt(withPostHog, [turnMessage('nokey', NOW - MIN)], NOW);
+    expect(await flushQueuedTurns(env.DB, env as PostHogEnv, NOW)).toEqual({
+      hasKey: false,
+      eligible: 0,
+      sent: 0,
+      sweptText: 0,
+    });
+  });
+
+  it('reports hasKey true with nothing eligible on an idle tick', async () => {
+    stubPostHogFetch();
+    expect(await flushQueuedTurns(env.DB, withPostHog, NOW)).toEqual({
+      hasKey: true,
+      eligible: 0,
+      sent: 0,
+      sweptText: 0,
+    });
+  });
+
+  it('reports eligible above sent when the send fails', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    stubPostHogFetch(503);
+    await runTailAt(withPostHog, [turnMessage('boom', NOW - MIN)], NOW);
+    const summary = await flushQueuedTurns(env.DB, withPostHog, NOW);
+    expect(summary.hasKey).toBe(true);
+    expect(summary.eligible).toBe(1);
+    expect(summary.sent).toBe(0);
   });
 });
 
@@ -734,11 +771,11 @@ describe('tool calls', () => {
     stubPostHogFetch(503);
     const ts = NOW - MIN;
     await runTailAt(withPostHog, [toolTurn(turnMessage('d', ts), ts)], NOW);
-    expect(await flushQueuedTurns(env.DB, withPostHog, NOW)).toBe(0);
+    expect((await flushQueuedTurns(env.DB, withPostHog, NOW)).sent).toBe(0);
 
     vi.restoreAllMocks();
     const seen = stubPostHogFetch();
-    expect(await flushQueuedTurns(env.DB, withPostHog, NOW + MIN)).toBe(1);
+    expect((await flushQueuedTurns(env.DB, withPostHog, NOW + MIN)).sent).toBe(1);
     expect(spansFrom(seen).map((s) => s.uuid)).toEqual([
       toolCallUuid(U('d'), 0),
       toolCallUuid(U('d'), 1),
@@ -793,7 +830,7 @@ describe('fan-out never outgrows the client queue', () => {
       names.map((n) => toolTurn(turnMessage(n, ts), ts)),
       NOW
     );
-    expect(await flushQueuedTurns(env.DB, withPostHog, NOW)).toBe(names.length);
+    expect((await flushQueuedTurns(env.DB, withPostHog, NOW)).sent).toBe(names.length);
 
     // Two tool calls per turn: one generation and two spans each, none lost at
     // a chunk boundary, and every turn's own uuid present exactly once.
