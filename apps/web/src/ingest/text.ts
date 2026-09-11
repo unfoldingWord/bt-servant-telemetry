@@ -200,11 +200,15 @@ export const MARK_EXPIRED_TEXT = `UPDATE events
  * Drop day-old spooled text, re-labelling its still-pending turns first. The
  * two run in one D1 batch — a single transaction — so no turn can be left
  * saying `scrubbed` with its words already deleted.
+ *
+ * Returns the number of spool rows deleted, so the cron heartbeat can say
+ * whether a tick actually swept anything.
  */
-export async function sweepExpiredText(db: D1Database, nowMs: number): Promise<void> {
+export async function sweepExpiredText(db: D1Database, nowMs: number): Promise<number> {
   const cutoff = nowMs - TEXT_MAX_AGE_MS;
-  await db.batch([
+  const [, swept] = await db.batch([
     db.prepare(MARK_EXPIRED_TEXT).bind(cutoff),
     db.prepare(SWEEP_STALE_TEXT).bind(cutoff),
   ]);
+  return swept?.meta.changes ?? 0;
 }

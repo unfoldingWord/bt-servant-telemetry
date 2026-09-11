@@ -19,7 +19,7 @@ export type MilestoneCrossing = {
 export async function runMilestoneWatch(
   db: D1Database,
   nowMs: number
-): Promise<{ intents: PostIntent[]; crossings: MilestoneCrossing[] }> {
+): Promise<{ intents: PostIntent[]; crossings: MilestoneCrossing[]; count: number }> {
   const count = await currentAllTimeUsers(db);
 
   const crossings: MilestoneCrossing[] = [];
@@ -43,7 +43,10 @@ export async function runMilestoneWatch(
       markdown: formatMilestone(threshold, count),
     });
   }
-  return { intents, crossings };
+  // `count` rides along for the cron heartbeat: a tick that crosses nothing is
+  // the common case, and "how many users did it see" is what distinguishes a
+  // healthy idle tick from a broken query.
+  return { intents, crossings, count };
 }
 
 async function currentAllTimeUsers(db: D1Database): Promise<number> {

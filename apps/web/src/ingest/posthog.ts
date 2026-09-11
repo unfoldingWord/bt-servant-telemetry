@@ -360,6 +360,18 @@ async function sendGenerations(
 }
 
 /**
+ * What one flush tick did. `hasKey` false means the queue-and-wait state (no
+ * `POSTHOG_API_KEY`), which is supported behaviour, not an error; `eligible`
+ * greater than `sent` means the send failed and the turns stayed queued.
+ */
+export type FlushSummary = {
+  hasKey: boolean;
+  eligible: number;
+  sent: number;
+  sweptText: number;
+};
+
+/**
  * Emit every settled, unsent turn as an `$ai_generation` (plus one `$ai_span`
  * per tool call). Runs from the once-a-minute cron and nowhere else.
  *
@@ -377,23 +389,25 @@ async function sendGenerations(
  * The sweep re-labels the turns it strips (`spool_expired`) in the same
  * transaction, so a turn sent after a long outage never claims text it lost.
  *
- * Returns the number of turns handed to the client, for tests and logs.
+ * Returns a summary of the run rather than a bare count, because three of its
+ * exits are silent by design — no API key, nothing settled, send failed — and
+ * the cron heartbeat has to be able to tell them apart. See `FlushSummary`.
  */
 export async function flushQueuedTurns(
   db: D1Database,
   env: PostHogEnv,
   nowMs: number
-): Promise<number> {
-  await sweepExpiredText(db, nowMs);
+): Promise<FlushSummary> {
+  const sweptText = await sweepExpiredText(db, nowMs);
   const client = createClient(env);
-  if (!client) return 0;
+  if (!client) return { hasKey: false, eligible: 0, sent: 0, sweptText };
 
   const settled = await db
     .prepare(SELECT_SETTLED)
     .bind(nowMs - posthogSettleMs(env.POSTHOG_SETTLE_SECONDS))
     .all<EventRow>();
   const turns = settled.results.map(rowToCleanEvent);
-  if (turns.length === 0) return 0;
+  if (turns.length === 0) return { hasKey: true, eligible: 0, sent: 0, sweptText };
   const texts = await loadSpooledText(
     db,
     turns.map((evt) => evt.turn_id as string)
@@ -405,9 +419,10 @@ export async function flushQueuedTurns(
       ...turns.map((evt) => db.prepare(MARK_EMITTED).bind(nowMs, evt.request_id, evt.ts)),
       ...turns.map((evt) => db.prepare(DELETE_TEXT).bind(evt.turn_id)),
     ]);
-    return turns.length;
+    return { hasKey: true, eligible: turns.length, sent: turns.length, sweptText };
   } catch (error) {
     warn('posthog_emit_failed', turns.length, error);
-    return 0; // nothing marked, nothing deleted: the next tick sends these again
+    // nothing marked, nothing deleted: the next tick sends these again
+    return { hasKey: true, eligible: turns.length, sent: 0, sweptText };
   }
 }
