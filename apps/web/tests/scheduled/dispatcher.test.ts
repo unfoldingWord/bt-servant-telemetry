@@ -6,6 +6,7 @@ import {
   CRON_MILESTONE_WATCH,
   CRON_POSTHOG_FLUSH,
   CRON_RECONCILE,
+  jobForCron,
   scheduledHandler,
   type PostIntent,
 } from '../../src/scheduled/index.js';
@@ -222,8 +223,51 @@ describe('cron_tick heartbeat', () => {
         level: 'error',
         ok: false,
         cron: CRON_ALERT_SWEEP,
+        job: 'alert_sweep',
         error: 'sink is down',
       }),
     ]);
+  });
+
+  // The job name is resolved before dispatch precisely so it survives a job
+  // that dies before returning anything. Without it, filtering by
+  // `job = "reconcile"` would return no heartbeat for the failed invocation —
+  // indistinguishable from the cron never having fired, which is the whole
+  // ambiguity this change removes.
+  it('names the job even when dispatch itself throws before returning a result', async () => {
+    const { ticks } = captureTicks();
+    await expect(
+      scheduledHandler(makeController(CRON_RECONCILE), scheduledEnv, ctx, {
+        sink: vi.fn(),
+        fetchImpl: vi.fn<typeof fetch>().mockRejectedValue(new Error('upstream down')),
+        nowMs: NOW,
+      })
+    ).rejects.toThrow();
+    expect(ticks()[0]).toMatchObject({ level: 'error', ok: false, job: 'reconcile' });
+  });
+
+  it('falls back to job "unknown" on a cron pattern with no handler', async () => {
+    const { ticks } = captureTicks();
+    await expect(
+      scheduledHandler(makeController('99 99 99 99 99'), scheduledEnv, ctx, {
+        sink: vi.fn(),
+        nowMs: NOW,
+      })
+    ).rejects.toThrow(/no handler for cron pattern/);
+    expect(ticks()[0]).toMatchObject({ level: 'error', ok: false, job: 'unknown' });
+  });
+
+  it('has a job name for every cron the dispatcher handles', () => {
+    // Guards the one drift this design allows: a cron added to dispatch's
+    // if-chain but not to JOB_BY_CRON would log job "unknown" on success.
+    for (const cron of [
+      CRON_RECONCILE,
+      CRON_DIGEST,
+      CRON_ALERT_SWEEP,
+      CRON_POSTHOG_FLUSH,
+      CRON_MILESTONE_WATCH,
+    ]) {
+      expect(jobForCron(cron)).not.toBe('unknown');
+    }
   });
 });
