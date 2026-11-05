@@ -70,6 +70,10 @@ function extractTurnFacts(obj: Record<string, unknown>): TurnFacts {
     language: asString(obj.language),
     language_source: asString(obj.language_source),
     response_language: asString(obj.response_language),
+    // #404: ISO 639-1 code of the language the user wrote in; 'und' when the engine could not tell.
+    input_language: asString(obj.input_language),
+    // Not on the wire. Inferred by the scrubber at tail ingest (ingest/scrub.ts), never taken from the engine.
+    target_language: null,
     user_country: asString(obj.user_country),
     edge_country: asString(obj.edge_country),
     model: asString(obj.model),
