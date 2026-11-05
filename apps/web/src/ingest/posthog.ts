@@ -190,6 +190,10 @@ export function toGenerationProperties(
     language: evt.language,
     language_source: evt.language_source,
     response_language: evt.response_language,
+    // Language the user wrote in (engine-detected ISO 639-1; 'und' when unsure).
+    input_language: evt.input_language,
+    // Language the user is translating INTO, inferred by the scrubber; absent when not explicit.
+    target_language: evt.target_language,
     user_country: evt.user_country,
     edge_country: evt.edge_country,
     iterations: num(evt.iterations),
@@ -212,8 +216,18 @@ export function toGenerationProperties(
     text_status: evt.text_status,
     // ── conversation: tool_use blocks + scrubbed text, when present ──
     ...conversationProperties(evt, text),
-    // Person properties kept current on every turn; drives cohorts (Q9).
-    $set: compact({ org: evt.org, client_id: evt.client_id, user_country: evt.user_country }),
+    $set: personProperties(evt),
+  });
+}
+
+/** Person properties kept current on every turn; drives cohorts (Q9) and People filters (Q3). */
+function personProperties(evt: CleanEvent): Record<string, unknown> {
+  return compact({
+    org: evt.org,
+    client_id: evt.client_id,
+    user_country: evt.user_country,
+    // Latest known target language, so People can be filtered by it.
+    target_language: evt.target_language,
   });
 }
 

@@ -82,6 +82,8 @@ async function scrubTurn(
     return null;
   }
   evt.text_status = TEXT_STATUS.scrubbed;
+  // The same model call also read which language the user is translating into.
+  evt.target_language = result.targetLanguage;
   return {
     turn_id: text.turnId,
     user_message: result.userMessage,

@@ -49,6 +49,8 @@ export const FACT_COLUMNS = [
   'engine_version',
   'tool_calls',
   'error_type',
+  'input_language',
+  'target_language',
 ] as const;
 
 export type FactColumn = (typeof FACT_COLUMNS)[number];
@@ -116,6 +118,8 @@ function factRecord(evt: CleanEvent): Record<FactColumn, unknown> {
     engine_version: evt.engine_version,
     tool_calls: toolCallsToJson(evt),
     error_type: evt.error_type,
+    input_language: evt.input_language,
+    target_language: evt.target_language,
   };
 }
 
@@ -195,6 +199,8 @@ export function rowToCleanEvent(row: EventRow): CleanEvent {
     engine_version: str(row.engine_version),
     tool_calls: toolCallsFromJson(row.tool_calls),
     error_type: str(row.error_type),
+    input_language: str(row.input_language),
+    target_language: str(row.target_language),
     session_id: row.session_id,
     session_turn_index: row.session_turn_index,
   };

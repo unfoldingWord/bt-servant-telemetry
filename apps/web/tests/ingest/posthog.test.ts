@@ -165,6 +165,8 @@ async function decodeBody(init: RequestInit | undefined): Promise<Record<string,
  * 'fail' mode it answers 400, which the SDK does not retry.
  */
 let anthropicMode: 'ok' | 'fail' = 'ok';
+/** What the stand-in model reports as the language the user translates into. */
+let scrubberTargetLanguage: string | null = null;
 function fakeScrubber(init: RequestInit | undefined): Response {
   const headers = { 'content-type': 'application/json' };
   if (anthropicMode === 'fail') {
@@ -179,6 +181,7 @@ function fakeScrubber(init: RequestInit | undefined): Response {
   const text = JSON.stringify({
     user_message: scrub(pick('user_message')),
     assistant_reply: scrub(pick('assistant_reply')),
+    target_language: scrubberTargetLanguage,
   });
   const message = {
     id: 'msg_test',
@@ -277,6 +280,7 @@ beforeEach(async () => {
 afterEach(() => {
   vi.restoreAllMocks();
   anthropicMode = 'ok';
+  scrubberTargetLanguage = null;
 });
 
 describe('mapping a turn to $ai_generation', () => {
@@ -465,6 +469,26 @@ describe('conversation text', () => {
     expect(JSON.stringify(seen)).not.toContain('Bob');
     expect(JSON.stringify(seen)).not.toContain('010-9999');
     expect(await spooledCount()).toBe(0); // sent ⇒ forgotten
+  });
+
+  it('carries the language written in and the target language the scrubber inferred', async () => {
+    const seen = stubPostHogFetch();
+    scrubberTargetLanguage = 'tetun';
+    const line = JSON.parse(textTurn('a', NOW - MIN)) as R;
+    line.input_language = 'sw';
+    await runTailAt(withText, [JSON.stringify(line)], NOW);
+
+    // Stamped on the turn at ingest, from the one scrub call, already normalized.
+    const row = await env.DB.prepare(
+      "SELECT input_language, target_language FROM events WHERE event = 'chat_turn'"
+    ).first<{ input_language: string | null; target_language: string | null }>();
+    expect(row).toEqual({ input_language: 'sw', target_language: 'Tetun' });
+
+    await flushQueuedTurns(env.DB, withText, NOW);
+    const p = propsOf(seen);
+    expect(p.input_language).toBe('sw');
+    expect(p.target_language).toBe('Tetun');
+    expect(p.$set).toMatchObject({ target_language: 'Tetun' });
   });
 
   it('keeps the text spooled when PostHog rejects the batch, and sends it on the next tick', async () => {

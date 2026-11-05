@@ -52,6 +52,9 @@
       "allowedVersions": {
         "svelte-echarts>echarts": "6"
       }
+    },
+    "overrides": {
+      "devalue": "^5.9.3"
     }
   }
 }

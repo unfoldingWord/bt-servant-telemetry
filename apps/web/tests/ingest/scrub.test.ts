@@ -11,6 +11,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   DEFAULT_SCRUB_MODEL,
   isPlausibleRewrite,
+  normalizeLanguageName,
   scrubConversation,
   scrubPatterns,
 } from '../../src/ingest/scrub.js';
@@ -62,7 +63,17 @@ const swapBob = (body: Record<string, unknown>): string =>
   JSON.stringify({
     user_message: section(body, 'user_message').replace(/Bob/g, '[name]'),
     assistant_reply: section(body, 'assistant_reply').replace(/Bob/g, '[name]'),
+    target_language: null,
   });
+
+/** The same model, having also read which language the user translates into. */
+const swapBobInto =
+  (language: string | null) =>
+  (body: Record<string, unknown>): string =>
+    JSON.stringify({
+      ...(JSON.parse(swapBob(body)) as Record<string, unknown>),
+      target_language: language,
+    });
 
 const ENV = { ANTHROPIC_API_KEY: 'sk-ant-test' };
 const INPUT = {
@@ -132,6 +143,7 @@ describe('scrubConversation, layer 2 over the real SDK', () => {
         'My pastor [name] said to call him at [phone] or [email]. What does John 3:16 mean?',
       assistantReply:
         "[name] may be thinking of John 3:16, where Jesus speaks of God's love for the world.",
+      targetLanguage: null,
     });
     // The model never saw the raw phone number or email: patterns ran first.
     const sent = JSON.stringify(seen[0]?.body);
@@ -171,7 +183,11 @@ describe('scrubConversation, layer 2 over the real SDK', () => {
 
   it('fails closed when the model summarizes instead of scrubbing', async () => {
     stubAnthropic(() =>
-      JSON.stringify({ user_message: 'A question about John 3:16.', assistant_reply: '' })
+      JSON.stringify({
+        user_message: 'A question about John 3:16.',
+        assistant_reply: '',
+        target_language: null,
+      })
     );
     expect(await scrubConversation(INPUT, ENV)).toEqual({ ok: false, reason: 'implausible' });
   });
@@ -186,5 +202,54 @@ describe('scrubConversation, layer 2 over the real SDK', () => {
     const result = await scrubConversation(INPUT, ENV);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('unparseable');
+  });
+
+  it('reports the target language when the exchange names one, as a stable name', async () => {
+    stubAnthropic(swapBobInto('tetun'));
+    const result = await scrubConversation(INPUT, ENV);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.targetLanguage).toBe('Tetun');
+  });
+
+  it('reports no target language when the model hedges instead of answering', async () => {
+    stubAnthropic(swapBobInto('unknown'));
+    const result = await scrubConversation(INPUT, ENV);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.targetLanguage).toBeNull();
+  });
+
+  it('asks for the target language in the same request, in schema and instructions', async () => {
+    const seen = stubAnthropic(swapBob);
+    await scrubConversation(INPUT, ENV);
+    const body = seen[0]?.body as Record<string, unknown>;
+    expect(JSON.stringify(body.output_config)).toContain('"target_language"');
+    expect(String(body.system)).toContain('target_language');
+    expect(seen).toHaveLength(1); // one call, not a second one per turn
+  });
+});
+
+describe('normalizeLanguageName', () => {
+  it.each([
+    ['Swahili', 'Swahili'],
+    ['tetun', 'Tetun'],
+    ['  afaan   oromo ', 'Afaan Oromo'],
+    ['HAITIAN CREOLE', 'Haitian Creole'],
+    ["Ma'di", "Ma'di"],
+  ])('normalizes %j to %j', (raw, expected) => {
+    expect(normalizeLanguageName(raw)).toBe(expected);
+  });
+
+  it.each([
+    null,
+    undefined,
+    '',
+    'unknown',
+    'Not specified',
+    'n/a',
+    'sw1',
+    'The user seems to be translating into Tetun',
+    'x'.repeat(65),
+  ])('rejects %j', (raw) => {
+    expect(normalizeLanguageName(raw)).toBeNull();
   });
 });
