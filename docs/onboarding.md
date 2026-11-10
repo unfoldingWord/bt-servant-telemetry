@@ -91,19 +91,12 @@ feature branch ──PR──▶ develop ──release PR (Ian)──▶ main �
 
 Start from the open issues list. If the thing you want to do is not there yet (the PostHog backfill, for example), open an issue first with what you observed, what you expect, and how you would check it. Your QA instincts are exactly what a good issue needs. Ian will confirm scope before you build.
 
-Good first ones at the time of writing:
-
-- #30: cohort tile queries do a full table scan. A small, well-defined index change with a clear way to verify.
-- #34: the latency trend chart shows disjoint segments. An investigation first, then a fix or a "working as intended".
-- #26: the trend chart can show zero users with a non-zero error rate. A population mismatch between two queries.
-- #32 and #31: what counts as an "active day". These need a product decision before code, so discuss on the issue first.
-
 ### 2. Make a branch
 
 ```bash
 git checkout develop
 git pull
-git checkout -b fix/30-cohort-index     # type/issue-number-short-name
+git checkout -b fix/123-short-name     # type/issue-number-short-name
 ```
 
 Branch types used here: `feat/`, `fix/`, `docs/`, `ci/`, `chore/`.
@@ -112,7 +105,7 @@ Branch types used here: `feat/`, `fix/`, `docs/`, `ci/`, `chore/`.
 
 Start Claude Code in the repo root. A good opening prompt looks like this:
 
-> Read CLAUDE.md and docs/implementation-plan.md. We are working on issue #30 (paste the issue body or the number). Before writing any code, tell me which files you think are involved and how you would verify the change. Write a failing test first, then make it pass.
+> Read CLAUDE.md and docs/implementation-plan.md. We are working on issue #123 (paste the issue body or the number). Before writing any code, tell me which files you think are involved and how you would verify the change. Write a failing test first, then make it pass.
 
 Things that work well:
 
@@ -140,8 +133,8 @@ Patch (`0.6.1` to `0.6.2`) for fixes, docs and small changes. Minor (`0.6.1` to 
 
 ```bash
 git add -A
-git commit -m "fix(web): add an index on users.days_active_count for the cohort tiles (v0.6.2)"
-git push -u origin fix/30-cohort-index
+git commit -m "fix(web): short description of the change (v0.6.2)"
+git push -u origin fix/123-short-name
 ```
 
 Commit titles follow `type(scope): what changed (vX.Y.Z)`. Look at `git log --oneline` for the pattern. Write a body too: what was wrong, what you changed, how you checked it.
@@ -152,7 +145,7 @@ Commit titles follow `type(scope): what changed (vX.Y.Z)`. Look at `git log --on
 gh pr create --base develop
 ```
 
-Or use the GitHub website. The PR body should have three parts: a summary of the change, how you tested it, and `Issue #30` (not `Closes #30`; issues close after QA, not after merge).
+Or use the GitHub website. The PR body should have three parts: a summary of the change, how you tested it, and `Issue #123` (not `Closes #123`; issues close after QA, not after merge).
 
 ### 7. Review
 
@@ -161,6 +154,19 @@ Or use the GitHub website. The PR body should have three parts: a summary of the
 - When the review is clean, Ian approves and merges. A few minutes later the dev dashboard is running your change.
 
 Check your change on the dev dashboard. That is the end of the PR, and the start of QA.
+
+## Skills you can borrow
+
+Ian's day-to-day Claude Code skills are published as a plugin so you can install them, try them, and change them. In Claude Code:
+
+```
+/plugin marketplace add unfoldingWord/uw-dev-skills
+/plugin install uw-flow@uw-dev-marketplace
+```
+
+Then, for example, `/uw-flow:plan-issue 123` fetches the issue, makes the branch, and drafts a plan for you to approve before any code is written. `/uw-flow:push-and-pr` takes a finished branch through commit, push, CI and PR. `/uw-flow:explain` is for anything you want in plain language. The plugin's README lists all of them and the caveats; two were written before the `develop` branch existed, so read a skill before trusting it, and improve it with a PR to that repo if you like.
+
+The same marketplace has `uw-dev`, Seth's shared commands and skills, including `cf-logs` for reading Cloudflare logs.
 
 ## Where things live
 
