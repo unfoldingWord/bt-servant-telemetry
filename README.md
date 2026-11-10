@@ -28,4 +28,6 @@ pnpm run test
 pnpm run build
 ```
 
-See [the implementation plan](../../.claude/plans/magical-wishing-kite.md) for context.
+## Contributing
+
+New here? Start with [docs/onboarding.md](docs/onboarding.md): setup, running it locally, the `develop` → `main` branching model and the PR loop. Design and history are in [docs/implementation-plan.md](docs/implementation-plan.md); the rules Claude Code follows in this repo are in [CLAUDE.md](CLAUDE.md).
