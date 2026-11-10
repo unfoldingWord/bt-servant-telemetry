@@ -52,6 +52,11 @@
       "allowedVersions": {
         "svelte-echarts>echarts": "6"
       }
+    },
+    "overrides": {
+      "devalue": "^5.9.3",
+      "hono": "^4.13.11",
+      "@anthropic-ai/sdk>zod": "^4.6.6"
     }
   }
 }
