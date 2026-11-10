@@ -61,10 +61,11 @@ pnpm dev
 
 Open http://localhost:8787/ and you should see the dashboard with numbers in it. `GET /api/snapshot` on the same port returns the same numbers as JSON.
 
-The checks that CI runs, so you can run them yourself first:
+The checks that CI runs, so you can run them yourself first (all from the repo root):
 
 ```bash
-pnpm lint            # ESLint + Prettier
+pnpm lint            # ESLint only
+pnpm format:check    # Prettier; CI runs this as a separate step, so run it too
 pnpm check           # TypeScript, including the tests, plus svelte-check
 pnpm architecture    # dependency rules (for example: nothing writes to D1 without going through redact)
 pnpm test            # vitest, runs inside a real Workers runtime with a real local D1
