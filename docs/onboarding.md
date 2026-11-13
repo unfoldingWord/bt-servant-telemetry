@@ -47,7 +47,24 @@ You already have admin access to the GitHub repo, so no forking is needed. You p
 
 ## Run it locally
 
-Two terminals.
+First, two one-time steps on a fresh clone:
+
+```bash
+# 1. Build once. A fresh clone has no apps/web/build folder, and `pnpm seed` and `pnpm dev` fail without it.
+pnpm build
+
+# 2. Create the tables in your local database. It starts empty, so seeding fails with
+#    "no such table: events" until you do this.
+cd apps/web
+pnpm exec wrangler d1 migrations apply bt-servant-telemetry-local --local
+cd ../..
+```
+
+Never add `--remote` to that migrations command. `--local` touches only the database on your laptop; `--remote` would change a real Cloudflare database.
+
+Run the migrations command again whenever you pull a change that adds a file to `apps/web/migrations/`.
+
+Then, two terminals:
 
 ```bash
 # terminal 1: fill the local database with fake data that exercises every tile
@@ -60,6 +77,8 @@ pnpm dev
 ```
 
 Open http://localhost:8787/ and you should see the dashboard with numbers in it. `GET /api/snapshot` on the same port returns the same numbers as JSON.
+
+Tip: while `pnpm seed` or `pnpm dev` is running, do not type in that terminal. Wrangler treats single keys as shortcuts. For example, `l` switches to remote mode and asks you to log in to Cloudflare. Use another terminal for commands, and press `Ctrl+C` to stop the server.
 
 The checks that CI runs, so you can run them yourself first (all from the repo root):
 
@@ -152,7 +171,10 @@ Or use the GitHub website. The PR body should have three parts: a summary of the
 
 - CI runs automatically. Green is required. If it is red, click through to the failing job and paste the error to Claude Code.
 - Ian runs a Codex review and posts the findings on the PR. Fix every finding, including the ones marked low. Push the fix and say the PR is ready for another look.
-- When the review is clean, Ian approves and merges. A few minutes later the dev dashboard is running your change.
+- Once CI is green and the Codex review is clean, merge the PR yourself with **Squash and merge**.
+  - If GitHub says the branch is out of date, click **Update branch**, wait for CI to go green again, then merge. `develop` only accepts PRs that are current with it.
+  - A few minutes after the merge, the dev dashboard is running your change.
+- Releases from `develop` to `main` (and on to production) stay with Ian. You never merge into `main`.
 
 Check your change on the dev dashboard. That is the end of the PR, and the start of QA.
 
