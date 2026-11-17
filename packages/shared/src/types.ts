@@ -65,6 +65,15 @@ export type CleanEvent = {
   language_source: string | null;
   /** Language the reply was written in. Distinct from `language`. */
   response_language: string | null;
+  /** ISO 639-1 code of the language the user WROTE in, detected by the engine
+   *  (bt-servant-worker #404); `und` when it could not tell. Distinct from
+   *  `response_language`, which is only the stored reply preference. */
+  input_language: string | null;
+  /** Language the user is translating the Bible INTO, as the scrubber
+   *  (ingest/scrub.ts) inferred it from the exchange: an English language name,
+   *  or null when the conversation does not make it explicit. Never the
+   *  language they wrote in — translators work in a wider language. */
+  target_language: string | null;
   /** Country derived from the user's phone number, where the channel allows it. */
   user_country: string | null;
   /** Country of the edge that served the request — the GATEWAY's egress for
@@ -118,6 +127,8 @@ export type TurnFacts = Pick<
   | 'language'
   | 'language_source'
   | 'response_language'
+  | 'input_language'
+  | 'target_language'
   | 'user_country'
   | 'edge_country'
   | 'model'
@@ -156,6 +167,8 @@ export const NO_TURN_FACTS: TurnFacts = {
   language: null,
   language_source: null,
   response_language: null,
+  input_language: null,
+  target_language: null,
   user_country: null,
   edge_country: null,
   model: null,
