@@ -1,26 +1,30 @@
 name: Deploy Dev
 
-# Fires after CI passes on a push to main (i.e. after PR merge).
-# Cloudflare Workers don't have per-PR preview URLs, so deploying every PR
-# would just clobber dev with unreviewed code. Gating on the post-merge CI
-# run means dev always reflects something that already passed review + CI.
+# Dev is this repo's integration environment: it follows the develop branch
+# only, and deploys after CI passes on a push to develop (i.e. after a PR
+# merges into develop). Cloudflare Workers don't have per-PR preview URLs, so
+# deploying every PR would just clobber dev with unreviewed code. Gating on
+# the post-merge CI run means dev always reflects something that already
+# passed review + CI. The branch filter alone is not enough: a release PR
+# (develop → main) runs CI with head branch develop too, so the job also
+# requires the CI run to have been triggered by a push (see below).
 on:
   workflow_run:
     workflows: ['CI']
     types: [completed]
-    branches: [main]
+    branches: [develop]
 
 jobs:
   deploy:
     name: Deploy to Dev
     runs-on: ubuntu-latest
-    # workflow_run fires on every CI completion that ran with `main` as its
-    # branch context — INCLUDING CI runs triggered by `pull_request:
-    # branches: [main]` on a feature branch. Without the `event == 'push'`
-    # guard, this job would deploy a PR head SHA to dev as soon as that
-    # PR's CI went green — exactly the pre-merge clobber the workflow_run
-    # rewrite was meant to remove. Both conditions must hold: CI succeeded
-    # AND the CI run was triggered by a push (i.e. a merge to main).
+    # workflow_run fires on every CI completion that ran with `develop` as
+    # its branch context — INCLUDING CI runs triggered by `pull_request:
+    # branches: [develop]` on a feature branch, and a release PR's CI run
+    # (whose head is develop). Without the `event == 'push'` guard, this job
+    # would deploy a PR head SHA to dev as soon as that PR's CI went green.
+    # Both conditions must hold: CI succeeded AND the CI run was triggered by
+    # a push (i.e. a merge into develop).
     if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' }}
     steps:
       - uses: actions/checkout@v4

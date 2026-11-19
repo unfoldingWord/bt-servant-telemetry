@@ -1,8 +1,13 @@
 name: Deploy Production
 
-# Manual deploy via the Actions tab. The `if: refs/heads/main` guard
-# below prevents accidental deploys from a feature branch even if
-# someone selects the wrong ref in the workflow_dispatch dialog.
+# Branching model (see CLAUDE.md "Branching Model"): production only ever runs
+# a release — a v* tag cut on main after a develop → main (or hotfix/*) merge.
+# Dispatch it on the tag, not on a branch:
+#
+#   gh workflow run deploy-prod.yml --ref v<version>
+#
+# Both jobs check out `github.ref`, i.e. the tag, so the gate validates and
+# the deploy builds exactly the tagged commit.
 on:
   workflow_dispatch:
 
@@ -10,15 +15,38 @@ jobs:
   preflight:
     name: Preflight (verify CI green on main)
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
     permissions:
       checks: read
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the ancestry check below can see origin/main.
+          fetch-depth: 0
 
-      # Don't ship a known-broken main. Look up the latest CI run on this
-      # commit and refuse to deploy if it didn't succeed. This costs a few
+      # workflow_dispatch accepts any ref, so refuse a branch, or a tag that
+      # never reached main, before anything is built or deployed. This is a
+      # failing step rather than a job-level `if:` on purpose: a skipped gate
+      # would make the run look like a quiet no-op instead of a refusal.
+      - name: Require a release tag on main
+        run: |
+          set -euo pipefail
+          echo "Dispatched on $GITHUB_REF ($GITHUB_SHA)"
+          case "$GITHUB_REF" in
+            refs/tags/v*) ;;
+            *)
+              echo "::error::Production deploys only from a v* release tag. Re-run with: gh workflow run deploy-prod.yml --ref v<version>"
+              exit 1 ;;
+          esac
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag ${GITHUB_REF#refs/tags/} points at $GITHUB_SHA, which is not on main. Tag the release commit on main."
+            exit 1
+          fi
+          echo "ok: ${GITHUB_REF#refs/tags/} is on main"
+
+      # Don't ship a known-broken release. The tag points at main's release
+      # merge commit, on which CI ran; refuse to deploy if it didn't succeed. This costs a few
       # seconds and prevents the "I clicked the button without checking" foot-gun.
       - name: Verify CI Pass on this commit
         uses: actions/github-script@v7
@@ -33,7 +61,7 @@ jobs:
             });
             const ciPass = checkRuns.check_runs[0];
             if (!ciPass) {
-              core.setFailed(`No CI Pass check found for ${sha}. Run CI on main before deploying.`);
+              core.setFailed(`No CI Pass check found for ${sha}. CI must have run on this release commit on main.`);
               return;
             }
             if (ciPass.conclusion !== 'success') {
@@ -44,9 +72,9 @@ jobs:
 
   deploy:
     name: Deploy to Production
+    # The gate above must succeed (release tag on main + CI Pass) first.
     needs: [preflight]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
     # GitHub deployment environment "production" — adds a protection
     # surface (required reviewers, wait timers) configurable in repo settings.
     environment: production
@@ -70,6 +98,32 @@ jobs:
       - name: Build SPA assets
         working-directory: apps/web
         run: pnpm run build:assets
+
+      # This workflow deploys the worker only; D1 migrations are applied by
+      # hand (`wrangler d1 migrations apply ... --env production --remote`).
+      # A worker that names a column the production database does not have
+      # yet fails its INSERTs, so refuse to deploy until every migration in
+      # the tagged commit is recorded as applied. Verify-only on purpose:
+      # the schema change stays a deliberate human step, and this step only
+      # reads `d1_migrations`.
+      - name: Require production D1 migrations to be applied
+        working-directory: apps/web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          applied=$(pnpm exec wrangler d1 execute bt-servant-telemetry-production \
+            --env production --remote --json \
+            --command "SELECT name FROM d1_migrations" \
+            | jq -r '.[0].results[].name' | sort)
+          expected=$(ls migrations/*.sql | xargs -n1 basename | sort)
+          missing=$(comm -23 <(echo "$expected") <(echo "$applied"))
+          if [ -n "$missing" ]; then
+            echo "::error::Production D1 is missing migrations: $(echo "$missing" | tr '\n' ' '). Apply them first: pnpm exec wrangler d1 migrations apply bt-servant-telemetry-production --env production --remote"
+            exit 1
+          fi
+          echo "ok: all $(echo "$expected" | wc -l) migrations are applied to production"
 
       # Required scopes on CLOUDFLARE_API_TOKEN (repo secret):
       #   Account → Workers Scripts → Edit
