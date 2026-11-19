@@ -55,4 +55,19 @@ describe('workflow triggers follow the develop/main branching model', () => {
     expect(prodYml).toMatch(/fetch-depth: 0/);
     expect(prodYml).not.toContain("github.ref == 'refs/heads/main'");
   });
+
+  it('production refuses to deploy while a migration is not applied to the production database', () => {
+    const gateAt = prodYml.indexOf('name: Require production D1 migrations to be applied');
+    expect(gateAt).toBeGreaterThan(-1);
+    expect(gateAt).toBeLessThan(prodYml.indexOf('wrangler-action'));
+    const gate = prodYml.slice(gateAt, prodYml.indexOf('wrangler-action'));
+    expect(gate).toContain('d1 execute bt-servant-telemetry-production');
+    expect(gate).toContain('--env production --remote');
+    expect(gate).toContain('SELECT name FROM d1_migrations');
+    expect(gate).toContain('ls migrations/*.sql');
+    expect(gate).toContain('exit 1');
+    // Verify-only: the workflow must never change the production schema itself.
+    // (The error message names the apply command; no line may run it.)
+    expect(prodYml).not.toMatch(/^\s*(pnpm exec |npx )?wrangler d1 migrations apply/m);
+  });
 });

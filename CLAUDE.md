@@ -31,6 +31,13 @@ All deployments go through CI/CD (GitHub Actions). **Never run `wrangler deploy`
   gh workflow run deploy-prod.yml --ref v<version>
   ```
 
+- **D1 migrations are applied by hand; neither workflow runs them.** Apply a new migration to dev before merging the PR that adds it (dev deploys on merge), and to production before dispatching the production deploy. `deploy-prod.yml` checks `d1_migrations` and refuses to deploy while any migration in the tagged commit is not applied to production. From `apps/web`:
+
+  ```bash
+  pnpm exec wrangler d1 migrations apply bt-servant-telemetry-dev --env dev --remote
+  pnpm exec wrangler d1 migrations apply bt-servant-telemetry-production --env production --remote
+  ```
+
 ## Version Bumping and Release Tags
 
 The service version is `apps/web/package.json` `version`, mirrored in `apps/web/src/config/version.ts` (`VERSION`); CI's `Version Sync Check` fails when they differ. Every PR bumps both on its branch, before the final push:
