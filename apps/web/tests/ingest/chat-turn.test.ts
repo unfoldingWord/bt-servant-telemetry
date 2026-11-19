@@ -43,6 +43,7 @@ const CHAT_TURN_JSON = JSON.stringify({
   transport: 'whatsapp',
   chat_type: 'private',
   response_language: 'en',
+  input_language: 'sw',
   user_country: 'US',
   edge_country: 'US',
   mode: 'dbs-coach',
@@ -94,6 +95,8 @@ describe('chat_turn redaction', () => {
     expect(evt?.language).toBe('hindi');
     expect(evt?.language_source).toBe('trigger');
     expect(evt?.response_language).toBe('en');
+    // target_language is never read from the engine: the scrubber stamps it at ingest.
+    expect(evt).toMatchObject({ input_language: 'sw', target_language: null });
     expect(evt?.user_country).toBe('US');
     expect(evt?.had_inbound_voice).toBe(false);
     expect(evt?.had_outbound_voice).toBe(true);
@@ -137,12 +140,13 @@ describe('chat_turn persistence', () => {
     const row = await env.DB.prepare(
       `SELECT turn_id, mode, language, model, iterations, exit_reason, stop_reason,
               input_tokens, output_tokens, billable_input_tokens,
-              had_inbound_voice, had_outbound_voice
+              had_inbound_voice, had_outbound_voice, input_language, target_language
          FROM events WHERE event = 'chat_turn'`
     ).first();
 
     expect(row).not.toBeNull();
     expect(row?.turn_id).toBe('turn-abc');
+    expect(row).toMatchObject({ input_language: 'sw', target_language: null });
     expect(row?.mode).toBe('dbs-coach');
     expect(row?.model).toBe('claude-sonnet-4-20250514');
     expect(row?.iterations).toBe(3);

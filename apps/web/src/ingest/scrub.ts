@@ -21,6 +21,13 @@ import { z } from 'zod/v4';
  * length moved more than name swaps could explain, so a model that summarized
  * or translated cannot pass as a scrub.
  *
+ * The same call also answers one question about the exchange: which language
+ * the user is translating the Bible INTO, when they make it explicit. It rides
+ * on the structured output as `target_language`, so it costs no extra request,
+ * and is normalized into a stable name (normalizeLanguageName) or null. The
+ * language the user WRITES in is detected by the engine (`input_language`) and
+ * is deliberately not asked for here.
+ *
  * FAIL CLOSED. Any failure — no key, API error, malformed or implausible
  * output — returns `{ ok: false }` and the caller withholds the text for that
  * turn. The turn's metadata still reaches PostHog; only its words are held back.
@@ -38,7 +45,7 @@ export const DEFAULT_SCRUB_MODEL = 'claude-haiku-4-5';
 export type ScrubInput = { userMessage: string; assistantReply: string };
 export type ScrubFailure = 'no_api_key' | 'api_error' | 'truncated' | 'unparseable' | 'implausible';
 export type ScrubResult =
-  | { ok: true; userMessage: string; assistantReply: string }
+  | { ok: true; userMessage: string; assistantReply: string; targetLanguage: string | null }
   | { ok: false; reason: ScrubFailure; detail?: string };
 
 // ── Layer 1: patterns ────────────────────────────────────────────────────────
@@ -71,7 +78,41 @@ export function scrubPatterns(text: string): string {
 const Scrubbed = z.object({
   user_message: z.string(),
   assistant_reply: z.string(),
+  target_language: z.string().nullable(),
 });
+
+/** What a model answers when it has no language to give but will not say null. */
+const NOT_A_LANGUAGE = new Set([
+  '',
+  'null',
+  'none',
+  'unknown',
+  'unclear',
+  'n/a',
+  'not specified',
+  'not stated',
+  'not mentioned',
+  'unspecified',
+]);
+/** A language name is letters, with the spaces, hyphens and apostrophes some carry. */
+const LANGUAGE_NAME = /^\p{L}[\p{L} \-'’]*$/u;
+const MAX_LANGUAGE_NAME_CHARS = 64;
+const MAX_LANGUAGE_NAME_WORDS = 4;
+
+/**
+ * Normalize the model's `target_language` into a stable breakdown value:
+ * trimmed, one capital per word ("afaan oromo" → "Afaan Oromo"), or null for
+ * anything that is not a plain language name — a hedge, a sentence, a code.
+ */
+export function normalizeLanguageName(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const name = raw.trim().replace(/\s+/g, ' ');
+  if (name.length > MAX_LANGUAGE_NAME_CHARS || NOT_A_LANGUAGE.has(name.toLowerCase())) return null;
+  if (!LANGUAGE_NAME.test(name)) return null;
+  const words = name.split(' ');
+  if (words.length > MAX_LANGUAGE_NAME_WORDS) return null;
+  return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+}
 
 const SYSTEM = `You are a privacy filter for a Bible-study chat log. You receive a user message and an assistant reply and return both with the names of private individuals removed.
 
@@ -80,6 +121,7 @@ Rules:
 2. Keep every other name exactly as written: people and places in the Bible, historical and public figures, authors and titles of published works, organizations and denominations, languages, people groups, and the names of the books of the Bible.
 3. Change nothing else. Do not translate, summarize, correct, reformat or shorten. Keep every line break, every other word and all punctuation. Placeholders already present, such as [phone], [email], [link] or [handle], stay exactly as they are.
 4. The texts may be in any language. Apply the same rules in that language.
+5. Separately, set target_language to the language the user is translating the Bible INTO, as an English language name such as "Swahili", "Tetun" or "Afaan Oromo" — but only when the exchange makes it explicit: the user names the language they are translating into, asks how to say something in it, or shares a draft translation in it. The language the user writes in is not evidence: translators work in a wider language such as English, French, Portuguese, Hindi or Indonesian while translating into another. When the exchange does not say, set target_language to null.
 
 If a text contains no private names, return it unchanged.`;
 
@@ -137,7 +179,12 @@ export async function scrubConversation(input: ScrubInput, env: ScrubEnv): Promi
     ) {
       return { ok: false, reason: 'implausible' };
     }
-    return { ok: true, userMessage: parsed.user_message, assistantReply: parsed.assistant_reply };
+    return {
+      ok: true,
+      userMessage: parsed.user_message,
+      assistantReply: parsed.assistant_reply,
+      targetLanguage: normalizeLanguageName(parsed.target_language),
+    };
   } catch (error) {
     // The SDK throws its typed APIError for transport/HTTP failures and a plain
     // error when the structured output cannot be parsed. Neither carries our text.
